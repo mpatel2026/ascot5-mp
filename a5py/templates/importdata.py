@@ -2165,19 +2165,19 @@ class ImportData():
 
         # We now need to build the point structures as in ASCOT wall.
         ntri = triangles.shape[0]
-        x1x2x3 = np.zeros(3*ntri)
-        y1y2y3 = np.zeros(3*ntri)
-        z1z2z3 = np.zeros(3*ntri)
+        x1x2x3 = np.zeros((ntri, 3))
+        y1y2y3 = np.zeros((ntri, 3))
+        z1z2z3 = np.zeros((ntri, 3))
         for itri in range(ntri):
             for ivec in range(3):
                 ipoint = triangles[itri, ivec]
-                x1x2x3[3*itri + ivec] = vertices[ipoint, 0]
-                y1y2y3[3*itri + ivec] = vertices[ipoint, 1]
-                z1z2z3[3*itri + ivec] = vertices[ipoint, 2]
+                x1x2x3[itri, ivec] = vertices[ipoint, 0]
+                y1y2y3[itri, ivec] = vertices[ipoint, 1]
+                z1z2z3[itri, ivec] = vertices[ipoint, 2]
         n = ntri // (2*nphi)
 
         # Generating the 3D wall data.
-        wall = {"nelements" : 2*n*nphi, "x1x2x3" : x1x2x3,
+        wall = {"nelements" : ntri, "x1x2x3" : x1x2x3,
                 "y1y2y3" : y1y2y3, "z1z2z3" : z1z2z3}
         
         return ("wall_3D", wall)
