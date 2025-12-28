@@ -222,9 +222,9 @@ int main(int argc, char** argv) {
 
 /* GOTO this block to free resources in case simulation crashes */
 CLEANUP_FAILURE:
-    free(p);
-    free(ps);
-    free(pout);
+    if(p) free(p);
+    if(ps) free(ps);
+    if(pout) free(pout);
     mpi_interface_finalize(1);
     abort();
     return 1;
