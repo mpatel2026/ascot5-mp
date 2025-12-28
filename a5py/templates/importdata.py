@@ -2088,7 +2088,7 @@ class ImportData():
         return ("B_STS", data)
 
     @staticmethod
-    def import_desc_lcfs_as_wall(fn: str, npoints: int=1000,
+    def import_desc_lcfs_as_wall(fn: str,
                                  rescale_R: float | None = None,
                                  rescale_B: float | None = None,
                                  ) -> tuple[str, dict]:
