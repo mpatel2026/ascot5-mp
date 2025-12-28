@@ -2180,7 +2180,7 @@ class ImportData():
         wall = {"nelements" : 2*n*nphi, "x1x2x3" : x1x2x3,
                 "y1y2y3" : y1y2y3, "z1z2z3" : z1z2z3}
         
-        return ("wall_3d", wall)
+        return ("wall_3D", wall)
 
     def import_nbi_waveforms(self, fn="nbi_waveforms.yaml"):
         """Import NBI geometry from a YAML file.
