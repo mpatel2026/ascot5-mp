@@ -597,6 +597,12 @@ class LibAscot:
         Nv = va.size if grid else 1
         n_species = self.input_getplasmaspecies()[0]
 
+        r = np.asarray(r, dtype="f8")
+        phi = np.asarray(phi, dtype="f8")
+        z = np.asarray(z, dtype="f8")
+        t = np.asarray(t, dtype="f8")
+        va = np.asarray(va, dtype="f8")
+
         m = unyt.m; s = unyt.s
         out = {"clog":None, "f":None, "k":None, "nu":None, "dpara":None,
                "dperp":None, "ddpara":None, "q":None, "dq":None, "mu0":None,
