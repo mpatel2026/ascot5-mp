@@ -1755,8 +1755,8 @@ class ImportData():
             psi0 += psipad
 
         out = {
-            "axis_phimin": phimin, 
-            "axis_phimax": phimax, 
+            "axis_phimin": 0.0, 
+            "axis_phimax": 2*np.pi, 
             "axis_nphi": nphi,
             "axisr": axis_r,  # m
             "axisz": axis_z,  # m
@@ -1836,6 +1836,34 @@ class ImportData():
         # < 1 non-physical -> raise)
         if Zeff < 1.0:
             raise ValueError("Zeff must be >= 1.0")
+        
+        # Based on experience: there seems to be problems when the data finishes 
+        # at rhomax = 1.0, we will artificially expand the data beyond to rho=2.0, 
+        # by adding zeros.
+        drho = rho[1] - rho[0]
+        rho_extra = np.arange(rhomax + drho, 2.0 + drho, drho)
+        nrho_extra = len(rho_extra)
+        rho = np.concatenate((rho, rho_extra))
+        edensity = unyt.unyt_array(
+            np.concatenate((edensity.to('m**-3').value, 
+                            np.zeros(nrho_extra) + 1e15)), 
+            'm**-3'
+        )
+        etemperature = unyt.unyt_array(
+            np.concatenate((etemperature.to('eV').value, 
+                            np.zeros(nrho_extra) + 1.0)), 
+            'eV'
+        )
+        itemperature = unyt.unyt_array(
+            np.concatenate((itemperature.to('eV').value, 
+                            np.zeros(nrho_extra) + 1.0)), 
+            'eV'
+        )
+        vtor = unyt.unyt_array(
+            np.concatenate((vtor.to('m/s').value, 
+                            np.zeros(nrho_extra))), 
+            'm/s'
+        )
 
         nion = 2
         nimp = (Zeff - 1.0) * edensity / (Zimp**2 - Zimp * Zeff + Zeff)
@@ -1855,9 +1883,8 @@ class ImportData():
             anum = np.concatenate((anum, [Aimp]))
             znum = np.concatenate((znum, [Zimp]))
             mass = np.concatenate((mass, [mass_imp]))
-        
 
-        plasma = {'nrho': nrho, 'rho': rho,
+        plasma = {'nrho': nrho + nrho_extra, 'rho': rho,
                   'nion': nion, 
                   'anum': anum, 
                   'znum': znum,
