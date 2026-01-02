@@ -251,8 +251,12 @@ a5err B_STS_reduce_symm(real r, real phi, real z,
                         real* r_out, real* phi_out, real* z_out, real* flip,
                         B_STS_data* Bdata){
     a5err err = 0;
+    const real twopi = 2.0 * M_PI;
 
-    real phi_int = fmod(phi, 2.0*M_PI);
+    real phi_int = fmod(phi, twopi);
+    if (phi_int < 0.0)
+        phi_int += twopi;
+
 
     if(Bdata->Nperiods <= 0 || Bdata->stell_sym == 0){
         // No stellarator symmetry to apply
