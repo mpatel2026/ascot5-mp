@@ -9,6 +9,7 @@
 #endif
 #include <stddef.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "ascot5.h"
 #include "diag.h"
 #include "mpi_interface.h"
