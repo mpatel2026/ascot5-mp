@@ -1,4 +1,4 @@
-CC=h5cc
+CC?=h5cc
 LFLAGS=
 
 ifdef TRAP_FPE
@@ -31,7 +31,7 @@ endif
 
 ifeq ($(MPI),1)
 	DEFINES+=-DMPI
-	CC=h5pcc
+#	CC=h5pcc
 endif
 
 ifneq ($(CC),h5cc)
