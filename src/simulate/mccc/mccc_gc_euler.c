@@ -126,7 +126,8 @@ void mccc_gc_euler(particle_simd_gc* p, real* h, B_field_data* Bdata,
             Xout_xyz[1] = Xin_xyz[1] + k1 * ( dW[1] - k2 * bhat[1] );
             Xout_xyz[2] = Xin_xyz[2] + k1 * ( dW[2] - k2 * bhat[2] );
             vout  = vin + K*h[i] + sqrt( 2 * Dpara ) * dW[3];
-            xiout = xiin - xiin*nu*h[i] + sqrt(( 1 - xiin*xiin ) * nu) * dW[4];
+            real xiin2 = fmax(0.0, 1.0 - xiin*xiin);
+            xiout = xiin - xiin*nu*h[i] + sqrt(xiin2 * nu) * dW[4];
 
             /* Enforce boundary conditions */
             real cutoff = MCCC_CUTOFF * sqrt( Tb[0] / p->mass[i] );

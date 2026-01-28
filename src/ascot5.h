@@ -108,7 +108,7 @@ typedef double real;  /**< Double precision float   */
 
 /** @brief Maximum number of Wiener processes stored (effectively number
  *  of time step reductions) */
-#define WIENERSLOTS 20
+#define WIENERSLOTS 100
 
 /** @brief Determine whether to use geometric method of Box-Muller to
  *  to generate normal random numbers */

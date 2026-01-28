@@ -31,7 +31,7 @@ endif
 
 ifeq ($(MPI),1)
 	DEFINES+=-DMPI
-	CC=h5pcc
+#	CC=h5pcc
 endif
 
 ifneq ($(CC),h5cc)
