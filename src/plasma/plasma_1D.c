@@ -114,6 +114,7 @@ void plasma_1D_free(plasma_1D_data* data) {
     free(data->rho);
     free(data->temp);
     free(data->dens);
+    free(data->vtor);
 }
 
 /**

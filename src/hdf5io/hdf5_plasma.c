@@ -134,6 +134,7 @@ int hdf5_plasma_read_1D(hid_t f, plasma_1D_data* data, char* qid) {
     free(anum);
     free(mass);
     free(charge);
+    free(vtor);
     return err;
 }
 

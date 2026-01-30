@@ -37,22 +37,26 @@ int N0_1D_init(N0_1D_data* data, int n_rho, real rho_min, real rho_max,
     data->maxwellian = (int*) malloc(n_species * sizeof(int));
     data->n0 = (linint1D_data*) malloc( n_species * sizeof(linint1D_data) );
     data->t0 = (linint1D_data*) malloc( n_species * sizeof(linint1D_data) );
+    real* c = (real*) malloc(n_rho * sizeof(real));
     for(int i = 0; i < data->n_species; i++) {
         data->anum[i] = anum[i];
         data->znum[i] = znum[i];
         data->maxwellian[i] = maxwellian[i];
 
-        real* c = (real*) malloc(n_rho * sizeof(real));
-        for(int i = 0; i < n_rho; i++) {
-            c[i] = density[i];
+        memset(c, 0, n_rho * sizeof(real));
+        for(int j = 0; j < n_rho; j++) {
+            c[j] = density[j];
         }
         linint1D_init(&data->n0[i], c, n_rho, NATURALBC, rho_min, rho_max);
-        c = (real*) malloc(n_rho * sizeof(real));
-        for(int i = 0; i < n_rho; i++) {
-            c[i] = temperature[i];
+
+        memset(c, 0, n_rho * sizeof(real));
+        for(int j = 0; j < n_rho; j++) {
+            c[j] = temperature[j];
         }
         linint1D_init(&data->t0[i], c, n_rho, NATURALBC, rho_min, rho_max);
+
     }
+    free(c);
 
     print_out(VERBOSE_IO, "\n1D neutral density and temperature (N0_1D)\n");
     print_out(VERBOSE_IO,
