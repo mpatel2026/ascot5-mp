@@ -29,7 +29,21 @@ void linint1D_init(linint1D_data* str, real* c,
     str->x_min  = x_min;
     str->x_max  = x_max;
     str->x_grid = x_grid;
-    str->c      = c;
+
+    // We copy the pointer to data array
+    str->c = (real*)malloc(n_x * sizeof(real));
+    for(int i=0; i<n_x; i++) {
+        str->c[i] = c[i];
+    }
+}
+
+/**
+ * @brief Free allocated resources
+ *
+ * @param str pointer to struct to be freed
+ */
+void linint1D_free(linint1D_data* str) {
+    free(str->c);
 }
 
 /**
