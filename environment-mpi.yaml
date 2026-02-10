@@ -1,11 +1,11 @@
-name: ascot-env
+name: ascot-develop-mp
 channels:
   - conda-forge
 dependencies:
   - c-compiler
   - make
   - llvm-openmp
-  - python>=3.10
+  - python=3.12
   - hdf5
   - zlib
   - setuptools
