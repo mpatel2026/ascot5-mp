@@ -9,6 +9,7 @@
 #endif
 #include <stddef.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "ascot5.h"
 #include "diag.h"
 #include "mpi_interface.h"
@@ -298,39 +299,29 @@ void mpi_gather_diag(diag_data* data, int ntotal, int mpi_rank, int mpi_size,
 #ifdef MPI
 
     if(data->dist5D_collect) {
-        MPI_Reduce(
-            mpi_rank == mpi_root ? MPI_IN_PLACE : data->dist5D.histogram,
-            data->dist5D.histogram,
-            data->dist5D.step_6 * data->dist5D.n_r,
-            mpi_type_real, MPI_SUM, mpi_root, MPI_COMM_WORLD);
+        size_t size = data->dist5D.step_6 * (size_t) data->dist5D.n_r;
+        mpi_gather_histogram_by_pieces((void*)data->dist5D.histogram, 
+                                        mpi_rank == mpi_root ? 1 : 0,size);
     }
     if(data->dist6D_collect) {
-        MPI_Reduce(
-            mpi_rank == mpi_root ? MPI_IN_PLACE : data->dist6D.histogram,
-            data->dist6D.histogram,
-            data->dist6D.step_7 * data->dist6D.n_r,
-            mpi_type_real, MPI_SUM, mpi_root, MPI_COMM_WORLD);
+        size_t size = data->dist6D.step_7 * (size_t) data->dist6D.n_r;
+        mpi_gather_histogram_by_pieces((void*)data->dist6D.histogram, 
+                                        mpi_rank == mpi_root ? 1 : 0,size);
     }
     if(data->distrho5D_collect) {
-        MPI_Reduce(
-            mpi_rank == mpi_root ? MPI_IN_PLACE : data->distrho5D.histogram,
-            data->distrho5D.histogram,
-            data->distrho5D.step_6 * data->distrho5D.n_rho,
-            mpi_type_real, MPI_SUM, mpi_root, MPI_COMM_WORLD);
+        size_t size = data->distrho5D.step_6 * (size_t) data->distrho5D.n_rho;
+        mpi_gather_histogram_by_pieces((void*)data->distrho5D.histogram, 
+                                        mpi_rank == mpi_root ? 1 : 0,size);
     }
     if(data->distrho6D_collect) {
-        MPI_Reduce(
-            mpi_rank == mpi_root ? MPI_IN_PLACE : data->distrho6D.histogram,
-            data->distrho6D.histogram,
-            data->distrho6D.step_7*data->distrho6D.n_rho,
-            mpi_type_real, MPI_SUM, mpi_root, MPI_COMM_WORLD);
+        size_t size = data->distrho6D.step_7 * (size_t) data->distrho6D.n_rho;
+        mpi_gather_histogram_by_pieces((void*)data->distrho6D.histogram, 
+                                        mpi_rank == mpi_root ? 1 : 0,size);
     }
     if(data->distCOM_collect) {
-        MPI_Reduce(
-            mpi_rank == mpi_root ? MPI_IN_PLACE : data->distCOM.histogram,
-            data->distCOM.histogram,
-            data->distCOM.step_2 * data->distCOM.n_mu,
-            mpi_type_real, MPI_SUM, mpi_root, MPI_COMM_WORLD);
+        size_t size = data->distCOM.step_2 * (size_t) data->distCOM.n_mu;
+        mpi_gather_histogram_by_pieces((void*)data->distCOM.histogram, 
+                                        mpi_rank == mpi_root ? 1 : 0,size);
     }
 
     if(data->diagorb_collect) {
@@ -555,5 +546,62 @@ void mpi_gather_diag(diag_data* data, int ntotal, int mpi_rank, int mpi_size,
         }
     }
 
+#endif
+}
+
+
+/**
+ * @brief Gather histogram data by pieces
+ *
+ * This function gathers histogram data from all processes to the root process.
+ * This will make the reduction in a piecewise manner to reduce memory usage, and
+ * overcome the MPI size limitations. 
+ * 
+ * Size limitations on communications are implementation dependent, but for example
+ * a 1GB message size limit should be good enough for most cases.
+ *
+ * @param origin pointer to the local histogram data
+ * @param am_i_root flag indicating if this process is the root process
+ * @param nelements number of elements in the histogram
+ */
+void mpi_gather_histogram_by_pieces(void* origin, int am_i_root, 
+                                    size_t nelements){
+#ifdef MPI
+    const size_t MAX_MESSAGE_SIZE = (size_t)1073741824; // 1 GiB
+    MPI_Datatype T = mpi_type_real;
+
+    // Get type size safely
+    MPI_Count tsize_c = 0;
+#if MPI_VERSION >= 3
+    // MPI_Type_size_x is MPI-2.2/3 depending on impl; guard if needed
+    MPI_Type_size_x(T, &tsize_c);
+#else
+    int tsize_i = 0;
+    MPI_Type_size(T, &tsize_i);
+    tsize_c = (MPI_Count)tsize_i;
+#endif
+    size_t type_size = (size_t)tsize_c;
+
+    // Compute max elements per chunk respecting both message-size and INT_MAX
+    size_t max_by_size = (type_size > 0) ? (MAX_MESSAGE_SIZE / type_size) : 0;
+    if (max_by_size == 0) max_by_size = 1; // ensure progress even if type > 1GiB
+    size_t max_by_count = (size_t)INT_MAX;
+    size_t max_elements_per_message = max_by_size < max_by_count ? max_by_size : max_by_count;
+
+    size_t remaining = nelements;
+    size_t offset = 0;
+
+    while (remaining > 0) {
+        size_t chunk = remaining > max_elements_per_message ? max_elements_per_message : remaining;
+        int count = (int)chunk; // safe by construction
+
+        void *recvbuf = (char*)origin + offset * type_size;
+        const void *sendbuf = am_i_root ? MPI_IN_PLACE : recvbuf;
+
+        MPI_Reduce(sendbuf, recvbuf, count, T, MPI_SUM, /*root=*/0, MPI_COMM_WORLD);
+
+        offset    += chunk;
+        remaining -= chunk;
+    }
 #endif
 }

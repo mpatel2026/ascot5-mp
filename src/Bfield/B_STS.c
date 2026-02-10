@@ -146,6 +146,8 @@ int B_STS_init(B_STS_data* data,
     }
     linint1D_init(&data->axis_r, c1, naxis, PERIODICBC, axis_min, axis_max);
     linint1D_init(&data->axis_z, c2, naxis, PERIODICBC, axis_min, axis_max);
+    free(c1);
+    free(c2);
 
     /** Setting the symmetry properties */
     data->Nperiods = Nperiods;
@@ -153,11 +155,22 @@ int B_STS_init(B_STS_data* data,
 
     /* Evaluate psi and magnetic field on axis for checks */
     real psival[1], Bval[3], axis[2];
-    err += B_STS_get_axis_rz(axis, data, 0);
-    err += B_STS_eval_psi(psival, axis[0], 0, axis[1], data);
-    err += B_STS_eval_B(Bval, axis[0], 0, axis[1], data);
+    err = B_STS_get_axis_rz(axis, data, 0);
+    if(err){
+        print_err("Error: Initialization failed at getting the magnetic axis on phi=0\n");
+        print_err("Got: (R, z) = (%f, %f)\n", axis[0], axis[1]);
+        return 1;
+    }
+
+    err = B_STS_eval_psi(psival, axis[0], 0, axis[1], data);
     if(err) {
-        print_err("Error: Initialization failed.\n");
+        print_err("Error while evaluating psi on axis during initialization.\n");
+        print_err("Got: psi0 = %f (given: %f)\n", psival[0], data->psi0);
+        return err;
+    }
+    err = B_STS_eval_B(Bval, axis[0], 0, axis[1], data);
+    if(err) {
+        print_err("Error while evaluating B on axis during initialization.\n");
         return err;
     }
 
@@ -204,6 +217,8 @@ void B_STS_free(B_STS_data* data) {
     free(data->B_r.c);
     free(data->B_phi.c);
     free(data->B_z.c);
+    linint1D_free(&data->axis_r);
+    linint1D_free(&data->axis_z);
 }
 
 /**
@@ -251,8 +266,12 @@ a5err B_STS_reduce_symm(real r, real phi, real z,
                         real* r_out, real* phi_out, real* z_out, real* flip,
                         B_STS_data* Bdata){
     a5err err = 0;
+    const real twopi = 2.0 * M_PI;
 
-    real phi_int = fmod(phi, 2.0*M_PI);
+    real phi_int = fmod(phi, twopi);
+    if (phi_int < 0.0)
+        phi_int += twopi;
+
 
     if(Bdata->Nperiods <= 0 || Bdata->stell_sym == 0){
         // No stellarator symmetry to apply

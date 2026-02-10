@@ -1768,8 +1768,8 @@ class ImportData():
             psi0 += psipad
 
         out = {
-            "axis_phimin": phimin, 
-            "axis_phimax": phimax, 
+            "axis_phimin": 0.0, 
+            "axis_phimax": 2*np.pi, 
             "axis_nphi": nphi,
             "axisr": axis_r,  # m
             "axisz": axis_z,  # m
@@ -1849,6 +1849,34 @@ class ImportData():
         # < 1 non-physical -> raise)
         if Zeff < 1.0:
             raise ValueError("Zeff must be >= 1.0")
+        
+        # Based on experience: there seems to be problems when the data finishes 
+        # at rhomax = 1.0, we will artificially expand the data beyond to rho=2.0, 
+        # by adding zeros.
+        drho = rho[1] - rho[0]
+        rho_extra = np.arange(rhomax + drho, 2.0 + drho, drho)
+        nrho_extra = len(rho_extra)
+        rho = np.concatenate((rho, rho_extra))
+        edensity = unyt.unyt_array(
+            np.concatenate((edensity.to('m**-3').value, 
+                            np.zeros(nrho_extra) + 1e15)), 
+            'm**-3'
+        )
+        etemperature = unyt.unyt_array(
+            np.concatenate((etemperature.to('eV').value, 
+                            np.zeros(nrho_extra) + 1.0)), 
+            'eV'
+        )
+        itemperature = unyt.unyt_array(
+            np.concatenate((itemperature.to('eV').value, 
+                            np.zeros(nrho_extra) + 1.0)), 
+            'eV'
+        )
+        vtor = unyt.unyt_array(
+            np.concatenate((vtor.to('m/s').value, 
+                            np.zeros(nrho_extra))), 
+            'm/s'
+        )
 
         nion = 2
         nimp = (Zeff - 1.0) * edensity / (Zimp**2 - Zimp * Zeff + Zeff)
@@ -1868,9 +1896,8 @@ class ImportData():
             anum = np.concatenate((anum, [Aimp]))
             znum = np.concatenate((znum, [Zimp]))
             mass = np.concatenate((mass, [mass_imp]))
-        
 
-        plasma = {'nrho': nrho, 'rho': rho,
+        plasma = {'nrho': nrho + nrho_extra, 'rho': rho,
                   'nion': nion, 
                   'anum': anum, 
                   'znum': znum,
@@ -2099,6 +2126,101 @@ class ImportData():
         data.pop("rlcfs", None)
         data.pop("zlcfs", None)
         return ("B_STS", data)
+
+    @staticmethod
+    def import_desc_lcfs_as_wall(fn: str,
+                                 rescale_R: float | None = None,
+                                 rescale_B: float | None = None,
+                                 ) -> tuple[str, dict]:
+        """Import the LCFS from a DESC equilibrium as a wall for ASCOT.
+
+        Parameters
+        ----------
+        fn : str
+            File path to DESC HDF5 output.
+        npoints : int, optional
+            Number of points to use for the wall representation. Default = 1000.
+        Returns
+        -------
+        gtype : str
+            Type of the generated input data.
+        data : dict
+            Input data that can be passed to ``write_hdf5`` method of
+            a corresponding type.
+        """
+        if not os.path.isfile(fn):
+            raise FileNotFoundError(f"DESC file {fn} not found.")
+
+        fam = dscio.load(fn, file_format="hdf5")
+        try:  # if file is an EquilibriaFamily, use final Equilibrium
+            eq = fam[-1]
+        except:  # file is already an Equilibrium
+            eq = fam
+
+        if (rescale_R is not None) and (rescale_B is not None):
+            eq = rescale(eq, L=("R0", rescale_R), B=("B0", rescale_B))
+        elif rescale_R is not None:
+            eq = rescale(eq, L=("R0", rescale_R))
+        elif rescale_B is not None:
+            eq = rescale(eq, B=("B0", rescale_B))
+
+
+        # boundary
+        grid = dscg.LinearGrid(
+            rho=1.0, theta=360, zeta=1024, NFP=1, sym=False, endpoint=True
+        )
+        data = eq.compute(["R", "Z"], grid=grid)
+        bdry_r = data["R"].reshape((grid.num_zeta, grid.num_theta), order="C").T
+        bdry_z = data["Z"].reshape((grid.num_zeta, grid.num_theta), order="C").T
+        
+        # We now generate the points.
+        bdry_r = np.array(bdry_r)
+        bdry_z = np.array(bdry_z)
+        phi    = np.linspace(0, 2*np.pi, bdry_r.shape[1], endpoint=False)
+        phi = np.tile(phi, (bdry_r.shape[0], 1))
+        X = bdry_r * np.cos(phi)
+        Y = bdry_r * np.sin(phi)
+        Z = bdry_z
+
+        # We now build the triangles.
+        vertices = np.column_stack([
+            X.ravel(),
+            Y.ravel(),
+            Z.ravel()
+        ])
+
+        # Create triangles
+        triangles = []
+        ntheta = bdry_r.shape[0]
+        nphi = bdry_r.shape[1]
+        for i in range(ntheta):
+            for j in range(nphi):
+                p0 = i * nphi + j
+                p1 = i * nphi + (j + 1) % nphi
+                p2 = ((i + 1) % ntheta) * nphi + j
+                p3 = ((i + 1) % ntheta) * nphi + (j + 1) % nphi
+                triangles.append([p0, p2, p1])
+                triangles.append([p1, p2, p3])
+        triangles = np.asarray(triangles, dtype=int)
+
+        # We now need to build the point structures as in ASCOT wall.
+        ntri = triangles.shape[0]
+        x1x2x3 = np.zeros((ntri, 3))
+        y1y2y3 = np.zeros((ntri, 3))
+        z1z2z3 = np.zeros((ntri, 3))
+        for itri in range(ntri):
+            for ivec in range(3):
+                ipoint = triangles[itri, ivec]
+                x1x2x3[itri, ivec] = vertices[ipoint, 0]
+                y1y2y3[itri, ivec] = vertices[ipoint, 1]
+                z1z2z3[itri, ivec] = vertices[ipoint, 2]
+        n = ntri // (2*nphi)
+
+        # Generating the 3D wall data.
+        wall = {"nelements" : ntri, "x1x2x3" : x1x2x3,
+                "y1y2y3" : y1y2y3, "z1z2z3" : z1z2z3}
+        
+        return ("wall_3D", wall)
 
     def import_nbi_waveforms(self, fn="nbi_waveforms.yaml"):
         """Import NBI geometry from a YAML file.
