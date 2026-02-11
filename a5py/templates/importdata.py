@@ -34,10 +34,14 @@ try:
     import desc.io as dscio
     import desc.grid as dscg
     from desc.compat import rescale
+    from desc.grid import QuadratureGrid
+    from desc.magnetic_fields import PlasmaField
 except:
     dscio = None
     dsccg = None
     rescale = None
+    QuadratureGrid = None
+    PlasmaField = None
 
 try:
     from tqdm import tqdm
@@ -1564,7 +1568,7 @@ class ImportData():
                    psipad: float=0.000, waitingbar: bool=False,
                    rescale_R: float=None, rescale_B: float=None,
                    L_radial: int=4, M_poloidal: int=4, 
-                   use_stell_sym: bool=True) -> tuple[str, dict]:
+                   use_stell_sym: bool=True, wall_offset: float=0.0) -> tuple[str, dict]:
         """Load magnetic field data from a DESC equilibrium.
 
         This will behave like a template for the DESC equilibrium for the ASCOT5
@@ -1613,6 +1617,8 @@ class ImportData():
             concentric grid. Default = 4.
         use_stell_sym : bool, optional
             Whether to use stellarator symmetry when computing the field. Default = True.
+        wall_offset : float, optional
+            Offset distance between wall and LCFS. Default assumes a wall at the LCFS. Default = 0. 
 
         Returns
         -------
@@ -1640,6 +1646,15 @@ class ImportData():
         """
         if not os.path.isfile(fn):
             raise FileNotFoundError(f"DESC file {fn} not found.")
+
+        if wall_offset < 0:
+            raise ValueError("Wall offset must be >= 0.")
+        
+        if not hasattr(wall_offset, 'units'):
+            # Assume it was meant to be cm if no units provided
+            wall_offset = wall_offset * unyt.cm
+        else:
+            wall_offset = wall_offset.to(unyt.cm)
 
         fam = dscio.load(fn, file_format="hdf5")
         try:  # if file is an EquilibriaFamily, use final Equilibrium
@@ -1691,10 +1706,12 @@ class ImportData():
         bdry_z = data["Z"].reshape((grid.num_zeta, grid.num_theta), order="C").T * unyt.m
 
         # boundaries
-        rmin = np.min(bdry_r)  # m
-        rmax = np.max(bdry_r)  # m
-        zmin = np.min(bdry_z)  # m
-        zmax = np.max(bdry_z)  # m
+        # NOTE For adding wall offsets, in order to get rz grid extended outwards, decrease/increase the bounds by wall_offset times a small multiplier (e.g. 1.2) to give a cushion for bfield beyond wall.
+        bfield_offset = wall_offset * 1.2
+        rmin = np.min(bdry_r) - bfield_offset  # m
+        rmax = np.max(bdry_r) + bfield_offset  # m
+        zmin = np.min(bdry_z) - bfield_offset  # m
+        zmax = np.max(bdry_z) + bfield_offset  # m
         psi1 = eq.Psi * unyt.Wb  # Wb
 
         # output domain
@@ -1723,18 +1740,46 @@ class ImportData():
             else:
                 iphi = phi[k]
             grid._nodes[:, 2] = iphi
-            data = eq.compute(["R", "Z", "psi", "B_R", "B_phi", "B_Z"], grid=grid)
+            data = eq.compute(["R", "Z", "psi"], grid=grid)
+            R = data["R"]
+            Z = data["Z"]
+
+            # if no wall offset just calculate the bfield up to lcfs using eq.compute
+            if wall_offset == 0.0:
+                bdata = eq.compute(["B_R", "B_phi", "B_Z"], grid=grid)
+                B_R = bdata["B_R"]
+                B_phi = bdata["B_phi"]
+                B_Z = bdata["B_Z"]
+
+            # if there is a wall offset then calculate the bfield up to slightly beyond the wall offset
+            else: 
+                # source grid is used to compute the vector potential from the plasma current density
+                source_grid = QuadratureGrid(L=eq.L_grid, M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP)
+                # create a PlasmaField object to perform the vector potential calculation
+                field = PlasmaField(
+                    eq,
+                    source_grid=source_grid,
+                    R_bounds=(R_min, R_max),  # R bounds of the computational domain
+                    Z_bounds=(Z_min, Z_max),  # Z bounds of the computational domain
+                    A_res=128,  # resolution of vector potential A, higher resolution is better
+                    chunk_size=200,  # a smaller chunk_size will take longer to run but use less memory
+                )
+                # Output is a 2D array, where each row is [B_R, B_phi, B_Z] at each coordinate point
+                B_R, B_phi, B_Z = field.compute_magnetic_grid(R, iphi, Z, eq.NFP).reshape(-1, 3)
+
 
             # interpolate data inside DESC domain
+            #NOTE currently fill_value = psi1 means that points in R_2d and Z_2d outside of lcfs are uniformly given the psi value of lcfs. 
+            #Eventually we want to be able to change the profile of psi past the lcfs so that we can test different edge profiles
             psi[:, :, k] = griddata(
                 (data["R"], data["Z"]),
                 data["psi"] * 2 * np.pi,  # DESC `psi` is normalized by 2 pi
                 (R_2d, Z_2d),
                 fill_value=psi1,
             )
-            br[:, :, k] = griddata((data["R"], data["Z"]), data["B_R"], (R_2d, Z_2d))
-            bphi[:, :, k] = griddata((data["R"], data["Z"]), data["B_phi"], (R_2d, Z_2d))
-            bz[:, :, k] = griddata((data["R"], data["Z"]), data["B_Z"], (R_2d, Z_2d))
+            br[:, :, k] = griddata((R, Z), B_R, (R_2d, Z_2d))
+            bphi[:, :, k] = griddata((R, Z), B_phi, (R_2d, Z_2d))
+            bz[:, :, k] = griddata((R, Z), B_Z, (R_2d, Z_2d))
 
             # Replace br, bphi, bz NaN values outside LCFS with closest values
             data = br[:, :, k].to('T').value
