@@ -4,7 +4,7 @@ import re
 import unyt
 import copy
 import os
-
+import time
 from scipy.interpolate import RegularGridInterpolator,griddata,NearestNDInterpolator
 
 import a5py.physlib as physlib
@@ -1568,8 +1568,254 @@ class ImportData():
                    psipad: float=0.000, waitingbar: bool=False,
                    rescale_R: float=None, rescale_B: float=None,
                    L_radial: int=4, M_poloidal: int=4, 
-                   use_stell_sym: bool=True, wall_offset: float=0.0) -> tuple[str, dict]:
+                   use_stell_sym: bool=True) -> tuple[str, dict]:
         """Load magnetic field data from a DESC equilibrium.
+
+        This will behave like a template for the DESC equilibrium for the ASCOT5
+        code: a dictionary with the inputs for the write_hdf5 function in the B_STS 
+        ASCOT5 input.
+        
+        This routine allows for non-self-consistent rescaling of the equilibrium
+        major radius R0 and magnetic field B0, which can be useful for simplified
+        scans of the equilibrium parameters. 
+
+        The radial and poloidal resolution of the DESC equilibrium used to compute
+        the field on the concentric grid can be controlled with the L_radial and
+        M_poloidal parameters, which act as multipliers of the original equilibrium
+        resolution. Keep this numbers relatively higher (e.g. 4) to ensure good accuracy
+        of the interpolated field, but take into account that the computational cost
+        increases with them.
+
+        The option to use_stell_sym allows to take advantage of stellarator symmetry
+        in the equilibrium, which can significantly speed up the field computation.
+
+        Parameters
+        ----------
+        h5file : str
+            File path to DESC HDF5 output.
+        nphi : int, optional
+            Number of toroidal angle phi grid points. Default = 360.
+        ntheta : int, optional
+            Number of poloidal angle theta grid points. Default = 120.
+        nr : int, optional
+            Number of radial coordinate R grid points. Default = 100.
+        nz : int, optional
+            Number of vertical coordinate Z grid points. Default = 100.
+        psipad : float, optional
+            Value to pad the toroidal flux psi0 on the magnetic axis (Wb). Default = 0.0.
+        waitingbar : bool, optional
+            Whether to show a progress bar during interpolation. Default = False.
+        rescale_R : float, optional
+            If provided, rescales the equilibrium major radius R0 to this value (m).
+        rescale_B : float, optional
+            If provided, rescales the equilibrium magnetic field B0 to this value (T).
+        L_radial : int, optional
+            Multiplier for the equilibrium radial resolution when computing on the
+            concentric grid. Default = 4.
+        M_poloidal : int, optional
+            Multiplier for the equilibrium poloidal resolution when computing on the
+            concentric grid. Default = 4.
+        use_stell_sym : bool, optional
+            Whether to use stellarator symmetry when computing the field. Default = True.
+
+        Returns
+        -------
+        out : dict
+            Dictionary with the following items:
+            - `'axis_nphi'`, `'b_nphi'`, `'psi_nphi'`: nphi
+            - `'b_nr'`, `'psi_nr'`: nr
+            - `'b_nz'`, `'psi_nz'`: nz
+            - `'axis_phimin'`, `'b_phimin'`, `'psi_phimin'`: phimin (deg)
+            - `'axis_phimax'`, `'b_phimax'`, `'psi_phimax'`: (phimax-phimin)*(nphi-1)/nphi (deg)
+            - `'b_rmin'`, `'psi_rmin'`: minimum radial coordinate R of output grids (m)
+            - `'b_rmax'`, `'psi_rmax'`: maximum radial coordinate R of output grids (m)
+            - `'b_zmin'`, `'psi_zmin'`: minimum vertical coordinate Z of output grids (m)
+            - `'b_zmax'`, `'psi_zmax'`: maximum vertical coordinate Z of output grids (m)
+            - `'axis_r'`: R(phi) on the magnetic axis (m)
+            - `'axis_z'`: Z(phi) on the magnetic axis (m)
+            - `'psi0'`: toroidal magnetic flux on the magnetic axis (Wb)
+            - `'psi1'`: toroidal magnetic flux through the last closed flux surface (Wb)
+            - `'psi'`: toroidal magnetic flux psi(R,phi,Z) (Wb)
+            - `'br'`: radial magnetic field B_R(R,phi,Z) (T)
+            - `'bphi'`: toroidal magnetic field B_phi(R,phi,Z) (T)
+            - `'bz'`: vertical magnetic field B_Z(R,phi,Z) (T)
+            - `'Nperiods'`: Number of field periods in the equilibrium
+            - `'stell_sym'`: whether to use stellarator symmetry (bool)
+        """
+        if not os.path.isfile(fn):
+            raise FileNotFoundError(f"DESC file {fn} not found.")
+
+        fam = dscio.load(fn, file_format="hdf5")
+        try:  # if file is an EquilibriaFamily, use final Equilibrium
+            eq = fam[-1]
+        except:  # file is already an Equilibrium
+            eq = fam
+
+        if (rescale_R is not None) and (rescale_B is not None):
+            eq = rescale(eq, L=("R0", rescale_R), B=("B0", rescale_B))
+        elif rescale_R is not None:
+            eq = rescale(eq, L=("R0", rescale_R))
+        elif rescale_B is not None:
+            eq = rescale(eq, B=("B0", rescale_B))
+
+        # toroidal angle array
+        # Patch for the abscense of the units decorators.
+        phimin = 0.0 * unyt.deg
+        phimax = 360.0 * unyt.deg / eq.NFP # Number of field periods.
+
+        if use_stell_sym:
+            phimax /= 2.0 # We can further reduce the toroidal angle range.
+
+            # This padding is added to remove the edge effects since the
+            # implemented symmetry does not allow us to use the symmetric
+            # spline in ASCOT.
+            dphi = (phimax - phimin) / (nphi - 1)
+            phimin = - 4.0 * dphi
+            phimax = phimax + 4.0 * dphi
+            nphi += 8
+
+        phi = np.linspace(phimin.to('rad').value, 
+                          phimax.to('rad').value, 
+                          nphi, endpoint=True)  # rad
+        # note: phi should start at 0 and end on 360, inclusive
+
+        # magnetic axis
+        grid_axis = dscg.LinearGrid(rho=0.0, zeta=nphi, NFP=1)
+        data_axis = eq.compute(["R", "Z"], grid=grid_axis)
+        axis_r = data_axis["R"]  # m
+        axis_z = data_axis["Z"]  # m
+        psi0 = 0  # Wb
+
+        # boundary
+        grid = dscg.LinearGrid(
+            rho=1.0, theta=ntheta, zeta=nphi, NFP=1, sym=False, endpoint=True
+        )
+        data = eq.compute(["R", "Z"], grid=grid)
+        bdry_r = data["R"].reshape((grid.num_zeta, grid.num_theta), order="C").T * unyt.m
+        bdry_z = data["Z"].reshape((grid.num_zeta, grid.num_theta), order="C").T * unyt.m
+
+        # boundaries
+        rmin = np.min(bdry_r)  # m
+        rmax = np.max(bdry_r)  # m
+        zmin = np.min(bdry_z)  # m
+        zmax = np.max(bdry_z)  # m
+        psi1 = eq.Psi * unyt.Wb  # Wb
+
+        # output domain
+        R_1d = np.linspace(rmin, rmax, nr)  # m
+        Z_1d = np.linspace(zmin, zmax, nz)  # m
+        Z_2d, R_2d = np.meshgrid(Z_1d, R_1d)
+        if hasattr(Z_2d, 'units'):
+            Z_2d = Z_2d.to('m').value
+        if hasattr(R_2d, 'units'):
+            R_2d = R_2d.to('m').value
+
+        # interpolate psi, B_R, B_phi, B_Z to cylindircal coordinates
+        psi = np.zeros([nr, nz, nphi]) * unyt.Wb
+        br = np.zeros([nr, nz, nphi]) * unyt.T
+        bphi = np.zeros([nr, nz, nphi]) * unyt.T
+        bz = np.zeros([nr, nz, nphi]) * unyt.T
+
+        for k in tqdm(range(nphi), desc="Interpolating DESC field", total=nphi, disable=not waitingbar):
+            # compute on concentric grid
+            grid = dscg.ConcentricGrid(
+                L=eq.L_grid*L_radial, M=eq.M_grid*M_poloidal, N=0, 
+                NFP=eq.NFP, node_pattern="linear"
+            )
+            if hasattr(phi, 'units'):
+                iphi = phi[k].to('rad').value
+            else:
+                iphi = phi[k]
+            grid._nodes[:, 2] = iphi
+            data = eq.compute(["R", "Z", "psi", "B_R", "B_phi", "B_Z"], grid=grid)
+
+            # interpolate data inside DESC domain
+            psi[:, :, k] = griddata(
+                (data["R"], data["Z"]),
+                data["psi"] * 2 * np.pi,  # DESC `psi` is normalized by 2 pi
+                (R_2d, Z_2d),
+                fill_value=psi1,
+            )
+            br[:, :, k] = griddata((data["R"], data["Z"]), data["B_R"], (R_2d, Z_2d))
+            bphi[:, :, k] = griddata((data["R"], data["Z"]), data["B_phi"], (R_2d, Z_2d))
+            bz[:, :, k] = griddata((data["R"], data["Z"]), data["B_Z"], (R_2d, Z_2d))
+
+            # Replace br, bphi, bz NaN values outside LCFS with closest values
+            data = br[:, :, k].to('T').value
+            mask = np.where(~np.isnan(data))
+            interp = NearestNDInterpolator(np.transpose(mask), data[mask])
+            filled_data = interp(*np.indices(data.shape))
+            br[:, :, k] = filled_data * unyt.T
+
+            data = bz[:, :, k].to('T').value
+            mask = np.where(~np.isnan(data))
+            interp = NearestNDInterpolator(np.transpose(mask), data[mask])
+            filled_data = interp(*np.indices(data.shape))
+            bz[:, :, k] = filled_data * unyt.T
+
+
+            data = bphi[:, :, k].to('T').value
+            mask = np.where(~np.isnan(data))
+            interp = NearestNDInterpolator(np.transpose(mask), data[mask])
+            filled_data = interp(*np.indices(data.shape))
+            bphi[:, :, k] = filled_data * unyt.T
+
+        # change order from [R,Z,phiang] to [R,phiang,Z]
+        psi = np.transpose(psi, (0, 2, 1))
+        br = np.transpose(br, (0, 2, 1))
+        bphi = np.transpose(bphi, (0, 2, 1))
+        bz = np.transpose(bz, (0, 2, 1))
+
+        # pad psi0 if needed
+        if psipad != 0.0:
+            print("Warning: Padding psi0 with", psipad)
+            psi0 += psipad
+
+        out = {
+            "axis_phimin": 0.0, 
+            "axis_phimax": 2*np.pi, 
+            "axis_nphi": nphi,
+            "axisr": axis_r,  # m
+            "axisz": axis_z,  # m
+            "b_rmin": rmin,  # m
+            "b_rmax": rmax,  # m
+            "b_nr": nr,
+            "b_zmin": zmin,  # m
+            "b_zmax": zmax,  # m
+            "b_nz": nz,
+            "b_phimin": phimin,  # deg
+            "b_phimax": np.rad2deg(phi[-1]),  # deg
+            "b_nphi": nphi,
+            "br": br,  # T
+            "bphi": bphi,  # T
+            "bz": bz,  # T
+            "psi": psi,  # Wb
+            "psi0": psi0,  # Wb
+            "psi1": psi1,  # Wb
+            "psi_rmin": rmin,  # m
+            "psi_rmax": rmax,  # m
+            "psi_nr": nr,
+            "psi_zmin": zmin,  # m
+            "psi_zmax": zmax,  # m
+            "psi_nz": nz,
+            "psi_phimin": phimin,  # deg
+            "psi_phimax": np.rad2deg(phi[-1]),  # deg
+            "psi_nphi": nphi,
+            "Nperiods": eq.NFP,
+            "stell_sym": use_stell_sym,
+        }
+
+        return ('B_STS', out)
+
+    @staticmethod
+    def desc_field_extended(fn: str, nphi: int=361, ntheta: int=120, 
+                   nr: int=100, nz: int=100, 
+                   psipad: float=0.000, waitingbar: bool=False,
+                   rescale_R: float=None, rescale_B: float=None,
+                   L_radial: int=4, M_poloidal: int=4, 
+                   use_stell_sym: bool=True, wall_offset: float=0.0) -> tuple[str, dict]:
+        """Load magnetic field data extended beyond last closed flux surface
+         from DESC equilibrium and coil files.
 
         This will behave like a template for the DESC equilibrium for the ASCOT5
         code: a dictionary with the inputs for the write_hdf5 function in the B_STS 
@@ -1708,13 +1954,13 @@ class ImportData():
         # boundaries
         # NOTE For adding wall offsets, in order to get rz grid extended outwards, decrease/increase the bounds by wall_offset times a small multiplier (e.g. 1.2) to give a cushion for bfield beyond wall.
         bfield_offset = wall_offset * 1.2
+        print("bfield_offset", bfield_offset)
         rmin = np.min(bdry_r) - bfield_offset  # m
         rmax = np.max(bdry_r) + bfield_offset  # m
         zmin = np.min(bdry_z) - bfield_offset  # m
         zmax = np.max(bdry_z) + bfield_offset  # m
         psi1 = eq.Psi * unyt.Wb  # Wb
 
-        # output domain
         R_1d = np.linspace(rmin, rmax, nr)  # m
         Z_1d = np.linspace(zmin, zmax, nz)  # m
         Z_2d, R_2d = np.meshgrid(Z_1d, R_1d)
@@ -1729,6 +1975,21 @@ class ImportData():
         bphi = np.zeros([nr, nz, nphi]) * unyt.T
         bz = np.zeros([nr, nz, nphi]) * unyt.T
 
+        # source grid is used to compute the vector potential from the plasma current density
+        source_grid = QuadratureGrid(L=eq.L_grid, M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP)
+        # create a PlasmaField object to perform the vector potential calculation
+        time_start_PlasmaField = time.time()
+        print('computing plasma field')
+        field = PlasmaField(
+            eq,
+            source_grid=source_grid,
+            R_bounds=(rmin, rmax),  # R bounds of the computational domain
+            Z_bounds=(zmin, zmax),  # Z bounds of the computational domain
+            A_res=128,  # resolution of vector potential A, higher resolution is better
+        )
+        time_end_PlasmaField = time.time()
+        print(f'finished plasma field in {time_end_PlasmaField - time_start_PlasmaField:.2f} seconds')
+
         for k in tqdm(range(nphi), desc="Interpolating DESC field", total=nphi, disable=not waitingbar):
             # compute on concentric grid
             grid = dscg.ConcentricGrid(
@@ -1740,48 +2001,69 @@ class ImportData():
             else:
                 iphi = phi[k]
             grid._nodes[:, 2] = iphi
-            data = eq.compute(["R", "Z", "psi"], grid=grid)
+            # always calculate the bfield at points up to lcfs using this method
+            data = eq.compute(["R", "Z", "psi", "B_R", "B_phi", "B_Z"], grid=grid)
             R = data["R"]
-            Z = data["Z"]
-
-            # if no wall offset just calculate the bfield up to lcfs using eq.compute
-            if wall_offset == 0.0:
-                bdata = eq.compute(["B_R", "B_phi", "B_Z"], grid=grid)
-                B_R = bdata["B_R"]
-                B_phi = bdata["B_phi"]
-                B_Z = bdata["B_Z"]
-
-            # if there is a wall offset then calculate the bfield up to slightly beyond the wall offset
-            else: 
-                # source grid is used to compute the vector potential from the plasma current density
-                source_grid = QuadratureGrid(L=eq.L_grid, M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP)
-                # create a PlasmaField object to perform the vector potential calculation
-                field = PlasmaField(
-                    eq,
-                    source_grid=source_grid,
-                    R_bounds=(R_min, R_max),  # R bounds of the computational domain
-                    Z_bounds=(Z_min, Z_max),  # Z bounds of the computational domain
-                    A_res=128,  # resolution of vector potential A, higher resolution is better
-                    chunk_size=200,  # a smaller chunk_size will take longer to run but use less memory
-                )
-                # Output is a 2D array, where each row is [B_R, B_phi, B_Z] at each coordinate point
-                B_R, B_phi, B_Z = field.compute_magnetic_grid(R, iphi, Z, eq.NFP).reshape(-1, 3)
-
-
-            # interpolate data inside DESC domain
+            Z = data["Z"]            
+            psi_data = data["psi"]
+            
             #NOTE currently fill_value = psi1 means that points in R_2d and Z_2d outside of lcfs are uniformly given the psi value of lcfs. 
             #Eventually we want to be able to change the profile of psi past the lcfs so that we can test different edge profiles
             psi[:, :, k] = griddata(
-                (data["R"], data["Z"]),
-                data["psi"] * 2 * np.pi,  # DESC `psi` is normalized by 2 pi
-                (R_2d, Z_2d),
-                fill_value=psi1,
-            )
-            br[:, :, k] = griddata((R, Z), B_R, (R_2d, Z_2d))
-            bphi[:, :, k] = griddata((R, Z), B_phi, (R_2d, Z_2d))
-            bz[:, :, k] = griddata((R, Z), B_Z, (R_2d, Z_2d))
+            (R, Z),
+            psi_data * 2 * np.pi,  # DESC `psi` is normalized by 2 pi
+            (R_2d, Z_2d),
+            fill_value=psi1)
 
-            # Replace br, bphi, bz NaN values outside LCFS with closest values
+            #Set up blank arrays for coil contributions to bfield
+            br_coil = np.zeros([nr, nz, 1]) * unyt.T
+            bphi_coil = np.zeros([nr, nz, 1]) * unyt.T
+            bz_coil = np.zeros([nr, nz, 1]) * unyt.T
+
+            #Set up blank arrays plasma current contributions to bfield 
+            br_plasma = np.zeros([nr, nz, 1]) * unyt.T
+            bphi_plasma = np.zeros([nr, nz, 1]) * unyt.T
+            bz_plasma = np.zeros([nr, nz, 1]) * unyt.T
+            
+            # Redefine R and Z to be linspaced arrays where bfield is computed at
+            R = np.linspace(rmin, rmax, nr)
+            Z = np.linspace(zmin, zmax, nz)
+
+            #Compute coil current contributions to b_field.
+            
+            br_coil = 
+            bphi_coil = 
+            bz_coil = 
+            # Compute plasma current contributions to bfield. bfield is a 3 by (nr*nz) array, where each row is [B_R_plasma, B_phi_plasma, B_Z_plasma] at each coordinate point in the RZ grid 
+            bfield_plasma = field.compute_magnetic_grid(R, iphi, Z, eq.NFP).reshape(-1, 3)
+            B_R_plasma = bfield_plasma[:, 0]
+            B_phi_plasma = bfield_plasma[:, 1]
+            B_Z_plasma = bfield_plasma[:, 2]   
+
+            B_R_plasma = B_R_plasma.reshape(nr,nz)
+            B_phi_plasma = B_phi_plasma.reshape(nr,nz)
+            B_Z_plasma = B_Z_plasma.reshape(nr,nz) 
+
+            target_pts = np.vstack([R_2d.ravel(), Z_2d.ravel()]).T
+        
+            interp_br = RegularGridInterpolator((R, Z), np.asarray(B_R_plasma), bounds_error=False, fill_value=0)
+            interpolated_values_br = interp_br(target_pts)
+            br_plasma = interpolated_values_br.reshape(R_2d.shape)
+        
+            interp_bphi = RegularGridInterpolator((R, Z), np.asarray(B_phi_plasma), bounds_error=False, fill_value=0)
+            interpolated_values_bphi = interp_bphi(target_pts)
+            bphi_plasma = interpolated_values_bphi.reshape(R_2d.shape)            
+        
+            interp_bz = RegularGridInterpolator((R, Z), np.asarray(B_Z_plasma), bounds_error=False, fill_value=0)
+            interpolated_values_bz = interp_bz(target_pts)
+            bz_plasma = interpolated_values_bz.reshape(R_2d.shape)
+
+            #Add coil and plasma current contributions for total bfield
+            br[:, :, k] = br_coil + br_plasma
+            bphi[:, :, k] = bphi_coil + bphi_plasma
+            bz[:, :, k] = bz_coil + bz_plasma
+            
+            # Replace nan's with closest value
             data = br[:, :, k].to('T').value
             mask = np.where(~np.isnan(data))
             interp = NearestNDInterpolator(np.transpose(mask), data[mask])
@@ -1800,7 +2082,7 @@ class ImportData():
             interp = NearestNDInterpolator(np.transpose(mask), data[mask])
             filled_data = interp(*np.indices(data.shape))
             bphi[:, :, k] = filled_data * unyt.T
-
+            
         # change order from [R,Z,phiang] to [R,phiang,Z]
         psi = np.transpose(psi, (0, 2, 1))
         br = np.transpose(br, (0, 2, 1))
@@ -1811,6 +2093,7 @@ class ImportData():
         if psipad != 0.0:
             print("Warning: Padding psi0 with", psipad)
             psi0 += psipad
+
 
         out = {
             "axis_phimin": 0.0, 
@@ -1843,7 +2126,7 @@ class ImportData():
             "psi_phimax": np.rad2deg(phi[-1]),  # deg
             "psi_nphi": nphi,
             "Nperiods": eq.NFP,
-            "stell_sym": use_stell_sym,
+            "stell_sym": use_stell_sym,  # m
         }
 
         return ('B_STS', out)
