@@ -2163,7 +2163,11 @@ class ImportData():
         if not os.path.isfile(fn):
             raise FileNotFoundError(f"DESC file {fn} not found.")
 
-        equ = dscio.load(fn, file_format="hdf5")
+        fam = dscio.load(fn, file_format="hdf5")
+        try:  # if file is an EquilibriaFamily, use final Equilibrium
+            equ = fam[-1]
+        except:  # file is already an Equilibrium
+            equ = fam
 
         rho = np.linspace(rhomin, rhomax, nrho)
         grid = dscg.LinearGrid(rho=rho, M=equ.M_grid, N=equ.N_grid, NFP=equ.NFP, sym=False)
