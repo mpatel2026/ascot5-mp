@@ -36,13 +36,14 @@ try:
     from desc.compat import rescale
     from desc.grid import QuadratureGrid
     from desc.magnetic_fields import PlasmaField
+    from desc.coils import MixedCoilSet
 except:
     dscio = None
     dsccg = None
     rescale = None
     QuadratureGrid = None
     PlasmaField = None
-
+    MixedCoilSet = None
 try:
     from tqdm import tqdm
 except:
@@ -1808,7 +1809,7 @@ class ImportData():
         return ('B_STS', out)
 
     @staticmethod
-    def desc_field_extended(fn: str, nphi: int=361, ntheta: int=120, 
+    def desc_field_extended(fn: str, fn_encircling: str, fn_shaping: str, nphi: int=361, ntheta: int=120, 
                    nr: int=100, nz: int=100, 
                    psipad: float=0.000, waitingbar: bool=False,
                    rescale_R: float=None, rescale_B: float=None,
@@ -1837,8 +1838,12 @@ class ImportData():
 
         Parameters
         ----------
-        h5file : str
-            File path to DESC HDF5 output.
+        fn : str
+            File path to DESC equilibria HDF5 output.
+        fn_encircling ; str
+            File path to DESC encircling coil file
+        fn_shaping ; str
+            File path to DESC shaping coil file
         nphi : int, optional
             Number of toroidal angle phi grid points. Default = 360.
         ntheta : int, optional
@@ -1866,6 +1871,7 @@ class ImportData():
         wall_offset : float, optional
             Offset distance between wall and LCFS. Default assumes a wall at the LCFS. Default = 0. 
 
+
         Returns
         -------
         out : dict
@@ -1892,6 +1898,10 @@ class ImportData():
         """
         if not os.path.isfile(fn):
             raise FileNotFoundError(f"DESC file {fn} not found.")
+        if not os.path.isfile(fn_encircling):
+            raise FileNotFoundError(f"DESC file {fn_encircling} not found. Please provide encircling coil file")
+        if not os.path.isfile(fn_shaping):
+            raise FileNotFoundError(f"DESC file {fn_shaping} not found. Please provide shaping coil file")
 
         if wall_offset < 0:
             raise ValueError("Wall offset must be >= 0.")
@@ -1975,6 +1985,10 @@ class ImportData():
         bphi = np.zeros([nr, nz, nphi]) * unyt.T
         bz = np.zeros([nr, nz, nphi]) * unyt.T
 
+        #load in coils for coil current bfield calculation
+        encircling = load("fn_encircling")
+        shaping = load("fn_shaping")
+        coils = MixedCoilSet((encircling, shaping), check_intersection=False)
         # source grid is used to compute the vector potential from the plasma current density
         source_grid = QuadratureGrid(L=eq.L_grid, M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP)
         # create a PlasmaField object to perform the vector potential calculation
@@ -2025,19 +2039,15 @@ class ImportData():
             bphi_plasma = np.zeros([nr, nz, 1]) * unyt.T
             bz_plasma = np.zeros([nr, nz, 1]) * unyt.T
             
-            # Redefine R and Z to be linspaced arrays where bfield is computed at
-            R = np.linspace(rmin, rmax, nr)
-            Z = np.linspace(zmin, zmax, nz)
-
             #Compute coil current contributions to b_field.
-            
+            coords = np.vstack([R_2d.ravel(), np.full(R_2d.size, iphi), Z_2d.ravel()]).T
+            bfield_coils = coils.compute_magnetic_field(coords, source_grid=None, chunk_size=None)
+            br_coil = bfield_coils[:,0]
+            bphi_coil = bfield_coils[:,1]
+            bz_coil = bfield_coils[:,2]
 
-            br_coil = 
-            bphi_coil = 
-            bz_coil = 
-
-            # Compute plasma current contributions to bfield. bfield is a 3 by (nr*nz) array, where each row is [B_R_plasma, B_phi_plasma, B_Z_plasma] at each coordinate point in the RZ grid 
-            bfield_plasma = field.compute_magnetic_grid(R, iphi, Z, eq.NFP).reshape(-1, 3)
+            # Compute plasma current contributions to bfield. bfield is a 3 by (nr*nz) array, where each row is [B_R_plasma, B_phi_plasma, B_Z_plasma] at each coordinate point in the RZ grid         
+            bfield_plasma = field.compute_magnetic_grid(R_1d, iphi, Z_1d, eq.NFP).reshape(-1, 3)
             B_R_plasma = bfield_plasma[:, 0]
             B_phi_plasma = bfield_plasma[:, 1]
             B_Z_plasma = bfield_plasma[:, 2]   
@@ -2558,6 +2568,7 @@ class ImportData():
 
     @staticmethod
     def import_desc_conformal_offset_wall(fn: str,
+                                          wall_offset: float,
                                  rescale_R: float | None = None,
                                  rescale_B: float | None = None,
                                  ) -> tuple[str, dict]:
@@ -2593,23 +2604,37 @@ class ImportData():
         elif rescale_B is not None:
             eq = rescale(eq, B=("B0", rescale_B))
 
-
+        #increase resolution in netheta and nzeta depending on how large the wall offset is
+        ntheta = 360 * multiplier
+        nzeta = 1024 * multiplier 
         # boundary
         grid = dscg.LinearGrid(
-            rho=1.0, theta=360, zeta=1024, NFP=1, sym=False, endpoint=True
+            rho=1.0, theta=ntheta, zeta=nzeta, NFP=1, sym=False, endpoint=True
         )
         data = eq.compute(["R", "Z"], grid=grid)
         bdry_r = data["R"].reshape((grid.num_zeta, grid.num_theta), order="C").T
         bdry_z = data["Z"].reshape((grid.num_zeta, grid.num_theta), order="C").T
         
+        #compute axis points 
+        grid_axis = dscg.LinearGrid(rho=0.0, zeta=nzeta, NFP=1)
+        data_axis = eq.compute(["R", "Z"], grid=grid_axis)
+        axis_r = data_axis["R"]  # m
+        axis_z = data_axis["Z"]  # m
+
         # We now generate the points.
         bdry_r = np.array(bdry_r)
         bdry_z = np.array(bdry_z)
         phi    = np.linspace(0, 2*np.pi, bdry_r.shape[1], endpoint=False)
         phi = np.tile(phi, (bdry_r.shape[0], 1))
+
+        # expand the bdry point outwards from the magnetic axis
+
+        
+        #convert expanded points into XYZ 
         X = bdry_r * np.cos(phi)
         Y = bdry_r * np.sin(phi)
         Z = bdry_z
+
 
         # We now build the triangles.
         vertices = np.column_stack([
