@@ -1986,14 +1986,15 @@ class ImportData():
         bz = np.zeros([nr, nz, nphi]) * unyt.T
 
         #load in coils for coil current bfield calculation
-        encircling = load("fn_encircling")
-        shaping = load("fn_shaping")
+        encircling = dscio.load(fn_encircling)
+        shaping = dscio.load(fn_shaping)
         coils = MixedCoilSet((encircling, shaping), check_intersection=False)
         # source grid is used to compute the vector potential from the plasma current density
         source_grid = QuadratureGrid(L=eq.L_grid, M=eq.M_grid, N=eq.N_grid, NFP=eq.NFP)
         # create a PlasmaField object to perform the vector potential calculation
         time_start_PlasmaField = time.time()
         print('computing plasma field')
+        #NOTE Changing increasing A_res below can lead to high fidelity bfields across the lcfs
         field = PlasmaField(
             eq,
             source_grid=source_grid,
@@ -2028,53 +2029,45 @@ class ImportData():
             psi_data * 2 * np.pi,  # DESC `psi` is normalized by 2 pi
             (R_2d, Z_2d),
             fill_value=psi1)
-
-            #Set up blank arrays for coil contributions to bfield
-            br_coil = np.zeros([nr, nz, 1]) * unyt.T
-            bphi_coil = np.zeros([nr, nz, 1]) * unyt.T
-            bz_coil = np.zeros([nr, nz, 1]) * unyt.T
-
-            #Set up blank arrays plasma current contributions to bfield 
-            br_plasma = np.zeros([nr, nz, 1]) * unyt.T
-            bphi_plasma = np.zeros([nr, nz, 1]) * unyt.T
-            bz_plasma = np.zeros([nr, nz, 1]) * unyt.T
             
             #Compute coil current contributions to b_field.
             coords = np.vstack([R_2d.ravel(), np.full(R_2d.size, iphi), Z_2d.ravel()]).T
             bfield_coils = coils.compute_magnetic_field(coords, source_grid=None, chunk_size=None)
-            br_coil = bfield_coils[:,0]
-            bphi_coil = bfield_coils[:,1]
-            bz_coil = bfield_coils[:,2]
+            br_coil = bfield_coils[:,0].reshape(nr,nz) 
+            bphi_coil = bfield_coils[:,1].reshape(nr,nz)
+            bz_coil = bfield_coils[:,2].reshape(nr,nz)
 
             # Compute plasma current contributions to bfield. bfield is a 3 by (nr*nz) array, where each row is [B_R_plasma, B_phi_plasma, B_Z_plasma] at each coordinate point in the RZ grid         
             bfield_plasma = field.compute_magnetic_grid(R_1d, iphi, Z_1d, eq.NFP).reshape(-1, 3)
-            B_R_plasma = bfield_plasma[:, 0]
-            B_phi_plasma = bfield_plasma[:, 1]
-            B_Z_plasma = bfield_plasma[:, 2]   
+            B_R_plasma = bfield_plasma[:, 0].reshape(nr,nz)
+            B_phi_plasma = bfield_plasma[:, 1].reshape(nr,nz)
+            B_Z_plasma = bfield_plasma[:, 2].reshape(nr,nz) 
 
-            B_R_plasma = B_R_plasma.reshape(nr,nz)
-            B_phi_plasma = B_phi_plasma.reshape(nr,nz)
-            B_Z_plasma = B_Z_plasma.reshape(nr,nz) 
+            #B_R_plasma = B_R_plasma.reshape(nr,nz)
+            #B_phi_plasma = B_phi_plasma.reshape(nr,nz)
+            #B_Z_plasma = B_Z_plasma.reshape(nr,nz) 
 
             target_pts = np.vstack([R_2d.ravel(), Z_2d.ravel()]).T
         
-            interp_br = RegularGridInterpolator((R, Z), np.asarray(B_R_plasma), bounds_error=False, fill_value=0)
+            interp_br = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_R_plasma), bounds_error=False, fill_value=0)
             interpolated_values_br = interp_br(target_pts)
             br_plasma = interpolated_values_br.reshape(R_2d.shape)
         
-            interp_bphi = RegularGridInterpolator((R, Z), np.asarray(B_phi_plasma), bounds_error=False, fill_value=0)
+            interp_bphi = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_phi_plasma), bounds_error=False, fill_value=0)
             interpolated_values_bphi = interp_bphi(target_pts)
             bphi_plasma = interpolated_values_bphi.reshape(R_2d.shape)            
         
-            interp_bz = RegularGridInterpolator((R, Z), np.asarray(B_Z_plasma), bounds_error=False, fill_value=0)
+            interp_bz = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_Z_plasma), bounds_error=False, fill_value=0)
             interpolated_values_bz = interp_bz(target_pts)
             bz_plasma = interpolated_values_bz.reshape(R_2d.shape)
 
             #Add coil and plasma current contributions for total bfield
-            br[:, :, k] = br_coil + br_plasma
-            bphi[:, :, k] = bphi_coil + bphi_plasma
-            bz[:, :, k] = bz_coil + bz_plasma
-            
+            br[:, :, k] = (br_coil + br_plasma) * unyt.T
+            bphi[:, :, k] = (bphi_coil + bphi_plasma) * unyt.T 
+            bz[:, :, k] = (bz_coil + bz_plasma) * unyt.T
+
+
+
             # Replace nan's with closest value
             data = br[:, :, k].to('T').value
             mask = np.where(~np.isnan(data))
