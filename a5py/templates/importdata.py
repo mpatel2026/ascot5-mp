@@ -6,7 +6,8 @@ import copy
 import os
 import time
 from scipy.interpolate import RegularGridInterpolator,griddata,NearestNDInterpolator
-
+import jax
+import jax.numpy as jnp
 import a5py.physlib as physlib
 from a5py.physlib import cocos as cocosmod
 from a5py.physlib import species as physlibspecies
@@ -2005,6 +2006,17 @@ class ImportData():
         time_end_PlasmaField = time.time()
         print(f'finished plasma field in {time_end_PlasmaField - time_start_PlasmaField:.2f} seconds')
 
+        # 1. Define a helper function and JIT it.
+        # This tells JAX: "Learn the SHAPE of this math, not the specific values."
+        @jax.jit
+        def get_coil_bfield(coords_batch):
+            # Pass the static chunk_size here
+            return coils.compute_magnetic_field(coords_batch, source_grid=None, chunk_size=10000)
+
+        # 2. Pre-prepare your static R and Z data once (outside the loop)
+        r_jax = jnp.array(R_2d.ravel())
+        z_jax = jnp.array(Z_2d.ravel())
+
         for k in tqdm(range(nphi), desc="Interpolating DESC field", total=nphi, disable=not waitingbar):
             # compute on concentric grid
             grid = dscg.ConcentricGrid(
@@ -2031,8 +2043,12 @@ class ImportData():
             fill_value=psi1)
             
             #Compute coil current contributions to b_field.
-            coords = np.vstack([R_2d.ravel(), np.full(R_2d.size, iphi), Z_2d.ravel()]).T
-            bfield_coils = coils.compute_magnetic_field(coords, source_grid=None, chunk_size=None)
+            #coords = np.vstack([R_2d.ravel(), np.full(R_2d.size, iphi), Z_2d.ravel()]).T            
+            #bfield_coils = coils.compute_magnetic_field(coords, source_grid=None, chunk_size=10000)
+            
+            phi_jax = jnp.full_like(r_jax, iphi)
+            coords_jax = jnp.column_stack([r_jax, phi_jax, z_jax])
+            bfield_coils = get_coil_bfield(coords_jax)
             br_coil = bfield_coils[:,0].reshape(nr,nz) 
             bphi_coil = bfield_coils[:,1].reshape(nr,nz)
             bz_coil = bfield_coils[:,2].reshape(nr,nz)
@@ -2088,6 +2104,10 @@ class ImportData():
             filled_data = interp(*np.indices(data.shape))
             bphi[:, :, k] = filled_data * unyt.T
             
+            #clear cache to prevent memory build up of coils.compute_magnetic_grid
+            if k % 50 == 0 and k > 0:
+                jax.clear_caches()
+
         # change order from [R,Z,phiang] to [R,phiang,Z]
         psi = np.transpose(psi, (0, 2, 1))
         br = np.transpose(br, (0, 2, 1))
@@ -2561,7 +2581,8 @@ class ImportData():
 
     @staticmethod
     def import_desc_conformal_offset_wall(fn: str,
-                                          wall_offset: float,
+                                          wall_offset: float = 0.0,
+                                          rescale_ntri: float = 1.0,
                                  rescale_R: float | None = None,
                                  rescale_B: float | None = None,
                                  ) -> tuple[str, dict]:
@@ -2571,6 +2592,10 @@ class ImportData():
         ----------
         fn : str
             File path to DESC HDF5 output.
+        wall_offset: float, optional
+            Distance (in cm) offset from lcfs at which to set the wall mesh. Default = 0 cm
+        rescale_ntri: float, optional
+            Scalar multiplier for number of triangles in the wall mesh. Default = 1
         npoints : int, optional
             Number of points to use for the wall representation. Default = 1000.
         Returns
@@ -2584,6 +2609,18 @@ class ImportData():
         if not os.path.isfile(fn):
             raise FileNotFoundError(f"DESC file {fn} not found.")
 
+        if wall_offset < 0:
+            raise ValueError("Wall offset must be >= 0.")
+        
+        if not hasattr(wall_offset, 'units'):
+            # Assume it was meant to be cm if no units provided
+            wall_offset = wall_offset * unyt.cm
+        else:
+            wall_offset = wall_offset.to(unyt.cm)
+
+        if rescale_ntri <= 0:
+            raise ValueError("rescale_ntri must be > 0.") 
+           
         fam = dscio.load(fn, file_format="hdf5")
         try:  # if file is an EquilibriaFamily, use final Equilibrium
             eq = fam[-1]
@@ -2597,9 +2634,9 @@ class ImportData():
         elif rescale_B is not None:
             eq = rescale(eq, B=("B0", rescale_B))
 
-        #increase resolution in netheta and nzeta depending on how large the wall offset is
-        ntheta = 360 * multiplier
-        nzeta = 1024 * multiplier 
+        #increase resolution in ntheta and nzeta depending on how large the wall offset is
+        ntheta = round(360 * rescale_ntri)
+        nzeta = round(1024 * rescale_ntri) 
         # boundary
         grid = dscg.LinearGrid(
             rho=1.0, theta=ntheta, zeta=nzeta, NFP=1, sym=False, endpoint=True
@@ -2620,13 +2657,34 @@ class ImportData():
         phi    = np.linspace(0, 2*np.pi, bdry_r.shape[1], endpoint=False)
         phi = np.tile(phi, (bdry_r.shape[0], 1))
 
-        # expand the bdry point outwards from the magnetic axis
+        # Attach units to the whole 2D arrays at once
+        lcfs_r = bdry_r * unyt.m
+        lcfs_z = bdry_z * unyt.m
 
-        
+        # Reshape axis arrays to (1, nzeta) to allow broadcasting across the (ntheta, nzeta) lcfs arrays
+        center_r = axis_r[np.newaxis, :] * unyt.m
+        center_z = axis_z[np.newaxis, :] * unyt.m
+
+        # create vectors between all lcfs and center points, create unit vectors, and extend the lcfs points by unit vectors times wall offset to get wall points
+        vec_r = lcfs_r - center_r
+        vec_z = lcfs_z - center_z
+        vec_mag = unyt.sqrt(vec_r**2 + vec_z**2)
+
+        unit_r = vec_r / vec_mag
+        unit_z = vec_z / vec_mag
+
+        # Resulting wall arrays (2D)
+        wall_r = (lcfs_r + wall_offset * unit_r).in_units('m').value
+        wall_z = (lcfs_z + wall_offset * unit_z).in_units('m').value
+
+            
+
+
+
         #convert expanded points into XYZ 
-        X = bdry_r * np.cos(phi)
-        Y = bdry_r * np.sin(phi)
-        Z = bdry_z
+        X = wall_r * np.cos(phi)
+        Y = wall_r * np.sin(phi)
+        Z = wall_z
 
 
         # We now build the triangles.
