@@ -1980,9 +1980,6 @@ class ImportData():
         if hasattr(R_2d, 'units'):
             R_2d = R_2d.to('m').value
 
-        R_1d_dense = np.linspace(rmin, rmax, 10 * nr)  # m
-        Z_1d_dense = np.linspace(zmin, zmax, 10 * nz)   # m
-
         # interpolate psi, B_R, B_phi, B_Z to cylindircal coordinates
         psi = np.zeros([nr, nz, nphi]) * unyt.Wb
         br = np.zeros([nr, nz, nphi]) * unyt.T
@@ -2016,10 +2013,6 @@ class ImportData():
             # Pass the static chunk_size here
             return coils.compute_magnetic_field(coords_batch, source_grid=None, chunk_size=10000)
         
-        @jax.jit
-        def get_plasma_bfield(coords_batch):
-            # Pass the static chunk_size here
-            return field.compute_magnetic_field(coords_batch, source_grid=None)
 
         # 2. Pre-prepare your static R and Z data once (outside the loop)
         r_jax = jnp.array(R_2d.ravel())
@@ -2050,10 +2043,7 @@ class ImportData():
             (R_2d, Z_2d),
             fill_value=psi1)
             
-            #Compute coil current contributions to b_field.
-            #coords = np.vstack([R_2d.ravel(), np.full(R_2d.size, iphi), Z_2d.ravel()]).T            
-            #bfield_coils = coils.compute_magnetic_field(coords, source_grid=None, chunk_size=10000)
-            
+            #Compute coil current contributions to b_field.            
             phi_jax = jnp.full_like(r_jax, iphi)
             coords_jax = jnp.column_stack([r_jax, phi_jax, z_jax])
 
@@ -2062,31 +2052,23 @@ class ImportData():
             bphi_coil = bfield_coils[:,1].reshape(nr,nz)
             bz_coil = bfield_coils[:,2].reshape(nr,nz)
 
-            # Compute plasma current contributions to bfield. bfield is a 3 by (nr*nz) array, where each row is [B_R_plasma, B_phi_plasma, B_Z_plasma] at each coordinate point in the RZ grid                     
-            #bfield_plasma = field.compute_magnetic_field(np.asarray(coords_jax))
-            #bfield_plasma = get_plasma_bfield(coords_jax)
-            #br_plasma = bfield_plasma[:,0].reshape(nr,nz) 
-            #bphi_plasma = bfield_plasma[:,1].reshape(nr,nz)
-            #bz_plasma = bfield_plasma[:,2].reshape(nr,nz)
-
-            
-            
-            bfield_plasma = field.compute_magnetic_grid(R_1d_dense, iphi, Z_1d_dense, eq.NFP).reshape(-1, 3)
-            B_R_plasma = bfield_plasma[:, 0].reshape(10*nr,10*nz)
-            B_phi_plasma = bfield_plasma[:, 1].reshape(10*nr,10*nz)
-            B_Z_plasma = bfield_plasma[:, 2].reshape(10*nr,10*nz) 
+                   
+            bfield_plasma = field.compute_magnetic_grid(R_1d, iphi, Z_1d, eq.NFP).reshape(-1, 3)
+            B_R_plasma = bfield_plasma[:, 0].reshape(nr,nz)
+            B_phi_plasma = bfield_plasma[:, 1].reshape(nr,nz)
+            B_Z_plasma = bfield_plasma[:, 2].reshape(nr,nz) 
 
             target_pts = np.vstack([R_2d.ravel(), Z_2d.ravel()]).T
 
-            interp_br_plasma = RegularGridInterpolator((R_1d_dense, Z_1d_dense), np.asarray(B_R_plasma), bounds_error=False, fill_value=0)
+            interp_br_plasma = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_R_plasma), bounds_error=False, fill_value=0)
             interpolated_values_br_plasma = interp_br_plasma(target_pts)
             br_plasma = interpolated_values_br_plasma.reshape(R_2d.shape)
         
-            interp_bphi_plasma = RegularGridInterpolator((R_1d_dense, Z_1d_dense), np.asarray(B_phi_plasma), bounds_error=False, fill_value=0)
+            interp_bphi_plasma = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_phi_plasma), bounds_error=False, fill_value=0)
             interpolated_values_bphi_plasma = interp_bphi_plasma(target_pts)
             bphi_plasma = interpolated_values_bphi_plasma.reshape(R_2d.shape)            
         
-            interp_bz_plasma = RegularGridInterpolator((R_1d_dense, Z_1d_dense), np.asarray(B_Z_plasma), bounds_error=False, fill_value=0)
+            interp_bz_plasma = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_Z_plasma), bounds_error=False, fill_value=0)
             interpolated_values_bz_plasma = interp_bz_plasma(target_pts)
             bz_plasma = interpolated_values_bz_plasma.reshape(R_2d.shape)
             
@@ -2596,7 +2578,7 @@ class ImportData():
     @staticmethod
     def import_desc_conformal_offset_wall(fn: str,
                                           wall_offset: float = 0.0,
-                                          rescale_ntri: float = 1.0,
+                                          cell_area: float = 1.0,
                                  rescale_R: float | None = None,
                                  rescale_B: float | None = None,
                                  ) -> tuple[str, dict]:
@@ -2608,8 +2590,8 @@ class ImportData():
             File path to DESC HDF5 output.
         wall_offset: float, optional
             Distance (in cm) offset from lcfs at which to set the wall mesh. Default = 0 cm
-        rescale_ntri: float, optional
-            Scalar multiplier for number of triangles in the wall mesh. Default = 1
+        cell_area: float, optional
+            Target area (in m^2) of each triangle in the wall mesh. Default = 1 m^2
         npoints : int, optional
             Number of points to use for the wall representation. Default = 1000.
         Returns
@@ -2632,8 +2614,14 @@ class ImportData():
         else:
             wall_offset = wall_offset.to(unyt.cm)
 
-        if rescale_ntri <= 0:
-            raise ValueError("rescale_ntri must be > 0.") 
+        if cell_area <= 0:
+            raise ValueError("cell_area must be > 0.") 
+        
+        if not hasattr(cell_area, 'units'):
+            # Assume it was meant to be m^2 if no units provided
+            cell_area = cell_area * unyt.m**2
+        else:
+            cell_area = cell_area.to(unyt.m**2)
            
         fam = dscio.load(fn, file_format="hdf5")
         try:  # if file is an EquilibriaFamily, use final Equilibrium
@@ -2648,7 +2636,16 @@ class ImportData():
         elif rescale_B is not None:
             eq = rescale(eq, B=("B0", rescale_B))
 
-        #increase resolution in ntheta and nzeta depending on how large the wall offset is
+        #calculate the surface area of lcfs and the average area of each triangle for the default settings
+        grid = dscg.LinearGrid(
+            rho=1.0, theta=360, zeta=1024, NFP=1, sym=False, endpoint=True
+        )
+        data = eq.compute(["S"], grid=grid)
+        surface_area = data["S"]
+        avg_area = surface_area / (360 * 1024)
+        rescale_ntri = np.sqrt(cell_area / avg_area)
+
+        #rescale resolution in ntheta and nzeta depending on desired 
         ntheta = round(360 * rescale_ntri)
         nzeta = round(1024 * rescale_ntri) 
         # boundary
@@ -2659,6 +2656,7 @@ class ImportData():
         bdry_r = data["R"].reshape((grid.num_zeta, grid.num_theta), order="C").T
         bdry_z = data["Z"].reshape((grid.num_zeta, grid.num_theta), order="C").T
         
+
         #compute axis points 
         grid_axis = dscg.LinearGrid(rho=0.0, zeta=nzeta, NFP=1)
         data_axis = eq.compute(["R", "Z"], grid=grid_axis)
