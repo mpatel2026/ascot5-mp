@@ -2578,7 +2578,7 @@ class ImportData():
     @staticmethod
     def import_desc_conformal_offset_wall(fn: str,
                                           wall_offset: float = 0.0,
-                                          cell_area: float = 1.0,
+                                          cell_area: float = 0.3,
                                  rescale_R: float | None = None,
                                  rescale_B: float | None = None,
                                  ) -> tuple[str, dict]:
@@ -2645,7 +2645,7 @@ class ImportData():
         avg_area = surface_area / (360 * 1024)
         rescale_ntri = np.sqrt(cell_area / avg_area)
 
-        #rescale resolution in ntheta and nzeta depending on desired 
+        #rescale resolution in ntheta and nzeta depending on desired cell area
         ntheta = round(360 * rescale_ntri)
         nzeta = round(1024 * rescale_ntri) 
         # boundary
