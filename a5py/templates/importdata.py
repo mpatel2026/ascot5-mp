@@ -2043,11 +2043,15 @@ class ImportData():
             (R_2d, Z_2d),
             fill_value=psi1)
             
+            br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
+            bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
+            bz_lcfs = griddata((R, Z), data["B_Z"], (R_2d, Z_2d)) * unyt.T
+
             #Compute coil current contributions to b_field.            
             phi_jax = jnp.full_like(r_jax, iphi)
             coords_jax = jnp.column_stack([r_jax, phi_jax, z_jax])
-
             bfield_coils = get_coil_bfield(coords_jax)
+            
             br_coil = bfield_coils[:,0].reshape(nr,nz) 
             bphi_coil = bfield_coils[:,1].reshape(nr,nz)
             bz_coil = bfield_coils[:,2].reshape(nr,nz)
@@ -2072,11 +2076,20 @@ class ImportData():
             interpolated_values_bz_plasma = interp_bz_plasma(target_pts)
             bz_plasma = interpolated_values_bz_plasma.reshape(R_2d.shape)
             
+            br_total = (br_coil + br_plasma) * unyt.T
+            bphi_total = (bphi_coil + bphi_plasma) * unyt.T 
+            bz_total = (bz_coil + bz_plasma) * unyt.T
+
+            inside_lcfs = ~np.isnan(br_lcfs)
+            br_total[inside_lcfs] = br_lcfs[inside_lcfs]
+            bphi_total[inside_lcfs] = bphi_lcfs[inside_lcfs]
+            bz_total[inside_lcfs] = bz_lcfs[inside_lcfs]
+
 
             #Add coil and plasma current contributions for total bfield
-            br[:, :, k] = (br_coil + br_plasma) * unyt.T
-            bphi[:, :, k] = (bphi_coil + bphi_plasma) * unyt.T 
-            bz[:, :, k] = (bz_coil + bz_plasma) * unyt.T
+            br[:, :, k] = br_total
+            bphi[:, :, k] = bphi_total
+            bz[:, :, k] = bz_total
 
 
 
@@ -2578,7 +2591,7 @@ class ImportData():
     @staticmethod
     def import_desc_conformal_offset_wall(fn: str,
                                           wall_offset: float = 0.0,
-                                          cell_area: float = 0.3,
+                                          cell_area: float = 0.002,
                                  rescale_R: float | None = None,
                                  rescale_B: float | None = None,
                                  ) -> tuple[str, dict]:
@@ -2636,6 +2649,7 @@ class ImportData():
         elif rescale_B is not None:
             eq = rescale(eq, B=("B0", rescale_B))
 
+        
         #calculate the surface area of lcfs and the average area of each triangle for the default settings
         grid = dscg.LinearGrid(
             rho=1.0, theta=360, zeta=1024, NFP=1, sym=False, endpoint=True
@@ -2643,8 +2657,8 @@ class ImportData():
         data = eq.compute(["S"], grid=grid)
         surface_area = data["S"]
         avg_area = surface_area / (360 * 1024)
-        rescale_ntri = np.sqrt(cell_area / avg_area)
-
+        rescale_ntri = np.sqrt(avg_area / cell_area)
+        
         #rescale resolution in ntheta and nzeta depending on desired cell area
         ntheta = round(360 * rescale_ntri)
         nzeta = round(1024 * rescale_ntri) 
