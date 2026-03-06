@@ -2043,9 +2043,9 @@ class ImportData():
             (R_2d, Z_2d),
             fill_value=psi1)
             
-            #br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
-            #bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
-            #bz_lcfs = griddata((R, Z), data["B_Z"], (R_2d, Z_2d)) * unyt.T
+            br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
+            bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
+            bz_lcfs = griddata((R, Z), data["B_Z"], (R_2d, Z_2d)) * unyt.T
 
             #Compute coil current contributions to b_field.            
             phi_jax = jnp.full_like(r_jax, iphi)
@@ -2080,10 +2080,11 @@ class ImportData():
             bphi_total = (bphi_coil + bphi_plasma) * unyt.T 
             bz_total = (bz_coil + bz_plasma) * unyt.T
 
-            #inside_lcfs = ~np.isnan(br_lcfs)
-            #br_total[inside_lcfs] = br_lcfs[inside_lcfs]
-            #bphi_total[inside_lcfs] = bphi_lcfs[inside_lcfs]
-            #bz_total[inside_lcfs] = bz_lcfs[inside_lcfs]
+            #get points inside lcfs by finding points where psi < ps1
+            inside_lcfs = psi[:, :, k] < psi1 -  (1 * unyt.Wb) # add a small buffer to ensure we are safely inside lcfs for these points
+            br_total[inside_lcfs] = br_lcfs[inside_lcfs]
+            bphi_total[inside_lcfs] = bphi_lcfs[inside_lcfs]
+            bz_total[inside_lcfs] = bz_lcfs[inside_lcfs]
 
 
             #Add coil and plasma current contributions for total bfield
