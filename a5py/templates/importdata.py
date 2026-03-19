@@ -1,4 +1,5 @@
 import numpy as np
+from matplotlib.path import Path
 import warnings
 import re
 import unyt
@@ -1982,6 +1983,7 @@ class ImportData():
 
         # interpolate psi, B_R, B_phi, B_Z to cylindircal coordinates
         psi = np.zeros([nr, nz, nphi]) * unyt.Wb
+        psi_extended = np.zeros([nr, nz, nphi]) * unyt.Wb
         br = np.zeros([nr, nz, nphi]) * unyt.T
         bphi = np.zeros([nr, nz, nphi]) * unyt.T
         bz = np.zeros([nr, nz, nphi]) * unyt.T
@@ -2001,7 +2003,7 @@ class ImportData():
             source_grid=source_grid,
             R_bounds=(rmin, rmax),  # R bounds of the computational domain
             Z_bounds=(zmin, zmax),  # Z bounds of the computational domain
-            A_res=128,  # resolution of vector potential A, higher resolution is better
+            A_res=32,  # resolution of vector potential A, higher resolution is better (128 is good)
         )
         time_end_PlasmaField = time.time()
         print(f'finished plasma field in {time_end_PlasmaField - time_start_PlasmaField:.2f} seconds')
@@ -2019,6 +2021,7 @@ class ImportData():
         z_jax = jnp.array(Z_2d.ravel())
 
         for k in tqdm(range(nphi), desc="Interpolating DESC field", total=nphi, disable=not waitingbar):
+            psi1 = eq.Psi * unyt.Wb  # Wb
             # compute on concentric grid
             grid = dscg.ConcentricGrid(
                 L=eq.L_grid*L_radial, M=eq.M_grid*M_poloidal, N=0, 
@@ -2029,34 +2032,27 @@ class ImportData():
             else:
                 iphi = phi[k]
             grid._nodes[:, 2] = iphi
-            # always calculate the bfield at points up to lcfs using this method
             data = eq.compute(["R", "Z", "psi", "B_R", "B_phi", "B_Z"], grid=grid)
             R = data["R"]
             Z = data["Z"]            
             psi_data = data["psi"]
-            
-            #NOTE currently fill_value = psi1 means that points in R_2d and Z_2d outside of lcfs are uniformly given the psi value of lcfs. 
-            #Eventually we want to be able to change the profile of psi past the lcfs so that we can test different edge profiles
+            psi_data_2pi = psi_data * 2 * np.pi
             psi[:, :, k] = griddata(
             (R, Z),
-            psi_data * 2 * np.pi,  # DESC `psi` is normalized by 2 pi
+            psi_data_2pi,
             (R_2d, Z_2d),
             fill_value=psi1)
-            
-            br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
-            bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
-            bz_lcfs = griddata((R, Z), data["B_Z"], (R_2d, Z_2d)) * unyt.T
 
             #Compute coil current contributions to b_field.            
             phi_jax = jnp.full_like(r_jax, iphi)
             coords_jax = jnp.column_stack([r_jax, phi_jax, z_jax])
             bfield_coils = get_coil_bfield(coords_jax)
-            
+
             br_coil = bfield_coils[:,0].reshape(nr,nz) 
             bphi_coil = bfield_coils[:,1].reshape(nr,nz)
             bz_coil = bfield_coils[:,2].reshape(nr,nz)
 
-                   
+                    
             bfield_plasma = field.compute_magnetic_grid(R_1d, iphi, Z_1d, eq.NFP).reshape(-1, 3)
             B_R_plasma = bfield_plasma[:, 0].reshape(nr,nz)
             B_phi_plasma = bfield_plasma[:, 1].reshape(nr,nz)
@@ -2067,32 +2063,34 @@ class ImportData():
             interp_br_plasma = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_R_plasma), bounds_error=False, fill_value=0)
             interpolated_values_br_plasma = interp_br_plasma(target_pts)
             br_plasma = interpolated_values_br_plasma.reshape(R_2d.shape)
-        
+
             interp_bphi_plasma = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_phi_plasma), bounds_error=False, fill_value=0)
             interpolated_values_bphi_plasma = interp_bphi_plasma(target_pts)
             bphi_plasma = interpolated_values_bphi_plasma.reshape(R_2d.shape)            
-        
+
             interp_bz_plasma = RegularGridInterpolator((R_1d, Z_1d), np.asarray(B_Z_plasma), bounds_error=False, fill_value=0)
             interpolated_values_bz_plasma = interp_bz_plasma(target_pts)
             bz_plasma = interpolated_values_bz_plasma.reshape(R_2d.shape)
-            
+
             br_total = (br_coil + br_plasma) * unyt.T
             bphi_total = (bphi_coil + bphi_plasma) * unyt.T 
             bz_total = (bz_coil + bz_plasma) * unyt.T
 
-            #get points inside lcfs by finding points where psi < ps1
-            inside_lcfs = psi[:, :, k] < psi1 -  (1 * unyt.Wb) # add a small buffer to ensure we are safely inside lcfs for these points
+            #get points inside lcfs by finding points where psi < ps1, and then set those points equal to eq.compute values of B
+            #if use_nested:
+            psi1 = eq.Psi * unyt.Wb  # Wb
+            br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
+            bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
+            bz_lcfs = griddata((R, Z), data["B_Z"], (R_2d, Z_2d)) * unyt.T
+            inside_lcfs = psi[:, :, k] < (psi1.value - 1) * unyt.Wb # add a small buffer to ensure we are safely inside lcfs for these points
             br_total[inside_lcfs] = br_lcfs[inside_lcfs]
             bphi_total[inside_lcfs] = bphi_lcfs[inside_lcfs]
             bz_total[inside_lcfs] = bz_lcfs[inside_lcfs]
-
 
             #Add coil and plasma current contributions for total bfield
             br[:, :, k] = br_total
             bphi[:, :, k] = bphi_total
             bz[:, :, k] = bz_total
-
-
 
             # Replace nan's with closest value
             data = br[:, :, k].to('T').value
@@ -2113,13 +2111,80 @@ class ImportData():
             interp = NearestNDInterpolator(np.transpose(mask), data[mask])
             filled_data = interp(*np.indices(data.shape))
             bphi[:, :, k] = filled_data * unyt.T
+
+            #NOTE Want to take R and Z at the lcfs and create concentric layers outside of the lcfs. 
+            #For each of these shells, integrate b field flux going through cross section and prescribe that value of psi to the layer
+            #After this is done and we have a value of psi for each point in the new layers, interpolate the psi grid and have the fill value 
+            # be the psi at the outmost layer
+            rho_max = np.max(grid.nodes[:, 0])
+            is_lcfs = np.isclose(grid.nodes[:, 0], rho_max, atol=1e-8)
+            lcfs_r = R[is_lcfs]
+            lcfs_z = Z[is_lcfs]
+            center_r = axis_r[k]
+            center_z = axis_z[k]
+
+            # create vectors between all lcfs and center points, create unit vectors.
+            vec_r = lcfs_r - center_r
+            vec_z = lcfs_z - center_z
+            vec_mag = np.sqrt(vec_r**2 + vec_z**2)
+
+            unit_r = vec_r / vec_mag
+            unit_z = vec_z / vec_mag
+
+            #set up several shells of conformal offsets and calculate psi for each shell
+            step_size = 0.5 * unyt.cm
+            num_steps = int(bfield_offset.to('cm').value / step_size.value)
+            offsets = np.linspace(step_size.value, bfield_offset.to('cm').value, num_steps) * unyt.cm
+            #offsets = [10,] * unyt.cm
+            shells_r = []
+            shells_z = []
+            shells_psi = []
+
+            # Resulting shell arrays (2D)
+            for d in offsets:
+                # Calculate the points for this specific offset layer
+                # Note: we ensure d is in meters to match lcfs_r/z
+                offset_r = (lcfs_r + d.to('m').value * unit_r)
+                offset_z = (lcfs_z + d.to('m').value * unit_z)
+                #calculate psi by integrating bphi inside layer
+                polygon = np.column_stack((offset_r, offset_z))
+                path = Path(polygon)
+                all_points = np.column_stack((R_2d.flatten(), Z_2d.flatten()))
+                inside_shell_mask = path.contains_points(all_points).reshape(nr,nz)
+                dr = (rmax - rmin) / (nr-1)
+                dz = (zmax - zmin) / (nz-1)
+                dA = dr * dz
+                layer_flux = np.sum(bphi_total[inside_shell_mask]) * dA
+                offset_psi = np.full_like(offset_r, layer_flux)
+
+                shells_r.append(offset_r)
+                shells_z.append(offset_z)
+                shells_psi.append(offset_psi)
+
+            #Adding the new R, Z, and psi data from outside the lcfs into the original R,Z, psi_data arrays
+            psi_shell = shells_psi[-1][0]
+            R_outside = np.array(shells_r).flatten()
+            Z_outside = np.array(shells_z).flatten()
+            psi_outside = np.array(shells_psi).flatten()
+            R_new = np.concatenate([R, R_outside])
+            Z_new = np.concatenate([Z, Z_outside])
+            psi_data_new = np.concatenate([psi_data_2pi, psi_outside])
+
+            #interpolating complete inside + outside lcfs data onto R_2d grid. With the fill value being the psi of the outermost shell
+
+            psi_extended[:, :, k] = griddata(
+            (R_new, Z_new),
+            psi_data_new,
+            (R_2d, Z_2d),
+            fill_value=psi_shell)
             
+
             #clear cache to prevent memory build up of coils.compute_magnetic_grid
             if k % 50 == 0 and k > 0:
                 jax.clear_caches()
 
         # change order from [R,Z,phiang] to [R,phiang,Z]
-        psi = np.transpose(psi, (0, 2, 1))
+        psi_extended = np.transpose(psi_extended, (0, 2, 1))
         br = np.transpose(br, (0, 2, 1))
         bphi = np.transpose(bphi, (0, 2, 1))
         bz = np.transpose(bz, (0, 2, 1))
@@ -2148,9 +2213,9 @@ class ImportData():
             "br": br,  # T
             "bphi": bphi,  # T
             "bz": bz,  # T
-            "psi": psi,  # Wb
+            "psi": psi_extended,  # Wb
             "psi0": psi0,  # Wb
-            "psi1": psi1,  # Wb
+            "psi1": eq.Psi * unyt.Wb,  # Wb
             "psi_rmin": rmin,  # m
             "psi_rmax": rmax,  # m
             "psi_nr": nr,
@@ -2275,6 +2340,119 @@ class ImportData():
                   'vtor': vtor.to('m/s').value,
                   'charge': znum, 'mass': mass}
         return ('plasma_1D', plasma)
+
+
+    @staticmethod
+    def desc_profiles_extended(fn: str, rhomin: float=0.0, rhomax: float=1.0, 
+                      nrho: int=100, fraction_T: float=0.5, Zeff: float=1.0,
+                      Aimp: int=12, Zimp: int=6, mass_imp: float=12.0) -> tuple[str, dict]:
+        """
+        Load the 1D profiles from the DESC file and prepares the plasma_1D input for ASCOT.
+
+        Parameters
+        ----------
+        fn : str
+            File path to DESC HDF5 output.
+        rhomin : float, optional
+            Minimum normalized radius rho. Default = 0.0.
+        rhomax : float, optional
+            Maximum normalized radius rho. Default = 1.0.
+        nrho : int, optional
+            Number of radial grid points. Default = 100.
+        fraction_T : float, optional
+            Fraction of the main ion density that is tritium. Default = 0.5.
+        Zeff : float, optional
+            Effective charge of the plasma. Default = 1.0.
+        Aimp : int, optional
+            Mass number of the impurity species. Default = 12 (carbon).
+        Zimp : int, optional
+            Charge number of the impurity species. Default = 6 (carbon).
+        Returns
+        -------
+
+        """
+        if not os.path.isfile(fn):
+            raise FileNotFoundError(f"DESC file {fn} not found.")
+
+        fam = dscio.load(fn, file_format="hdf5")
+        try:  # if file is an EquilibriaFamily, use final Equilibrium
+            equ = fam[-1]
+        except:  # file is already an Equilibrium
+            equ = fam
+
+        rho = np.linspace(rhomin, rhomax, nrho)
+        grid = dscg.LinearGrid(rho=rho, M=equ.M_grid, N=equ.N_grid, NFP=equ.NFP, sym=False)
+        data = equ.compute(["ne", "Te", "Ti"], grid=grid)
+        edensity = grid.compress(data["ne"]) * unyt.m**-3
+        etemperature = grid.compress(data["Te"]) * unyt.eV
+        itemperature = grid.compress(data["Ti"]) * unyt.eV
+        vtor = np.zeros_like(rho) * unyt.m / unyt.s  # zero toroidal rotation
+        # We need now to distinguish between the impurities and main ions. 
+        # The impurities are described using Zeff (> 1 implies impurities, = 1 pure plasma,
+        # < 1 non-physical -> raise)
+        if Zeff < 1.0:
+            raise ValueError("Zeff must be >= 1.0")
+        
+        # Based on experience: there seems to be problems when the data finishes 
+        # at rhomax = 1.0, we will artificially expand the data beyond to rho=2.0, 
+        # by adding zeros.
+        drho = rho[1] - rho[0]
+        rho_extra = np.arange(rhomax + drho, 2.0 + drho, drho)
+        nrho_extra = len(rho_extra)
+        rho = np.concatenate((rho, rho_extra))
+        edensity = unyt.unyt_array(
+            np.concatenate((edensity.to('m**-3').value, 
+                            np.zeros(nrho_extra) + 1e15)), 
+            'm**-3'
+        )
+        etemperature = unyt.unyt_array(
+            np.concatenate((etemperature.to('eV').value, 
+                            np.zeros(nrho_extra) + 1.0)), 
+            'eV'
+        )
+        itemperature = unyt.unyt_array(
+            np.concatenate((itemperature.to('eV').value, 
+                            np.zeros(nrho_extra) + 1.0)), 
+            'eV'
+        )
+        vtor = unyt.unyt_array(
+            np.concatenate((vtor.to('m/s').value, 
+                            np.zeros(nrho_extra))), 
+            'm/s'
+        )
+
+        nion = 2
+        nimp = (Zeff - 1.0) * edensity / (Zimp**2 - Zimp * Zeff + Zeff)
+        nmain = edensity - nimp * Zimp
+
+        # We now use the fraction_T to split the tritium from the deuterium.
+        n_tritium = fraction_T * nmain
+        n_deuterium = nmain - n_tritium
+        anum = np.array([2, 3])
+        znum = np.array([1, 1])
+        mass = np.array([2.014, 3.016]) * unyt.amu  # deuterium, tritium
+        idensity = np.array([n_deuterium, n_tritium]) * unyt.m**-3
+
+        if Zeff > 1.0:
+            nion = 3 # deuterium, tritium, impurity
+            idensity = np.concatenate((idensity.to('m**-3').value, [nimp])) * unyt.m**-3
+            anum = np.concatenate((anum, [Aimp]))
+            znum = np.concatenate((znum, [Zimp]))
+            mass = np.concatenate((mass, [mass_imp]))
+
+        plasma = {'nrho': nrho + nrho_extra, 
+                  'rho': rho,
+                  'nion': nion, 
+                  'anum': anum, 
+                  'znum': znum,
+                  'idensity': idensity.to('m**-3').value.T, 
+                  'edensity': edensity.to('m**-3').value,
+                  'etemperature': etemperature.to('eV').value,
+                  'itemperature': itemperature.to('eV').value, 
+                  'vtor': vtor.to('m/s').value,
+                  'charge': znum, 'mass': mass}
+        return ('plasma_1D', plasma)
+
 
     @staticmethod
     def extender_field(ncfile,extfile,ntheta=120,psipad=0.0):
