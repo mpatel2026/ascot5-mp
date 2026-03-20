@@ -1815,7 +1815,7 @@ class ImportData():
                    nr: int=100, nz: int=100, 
                    psipad: float=0.000, waitingbar: bool=False,
                    rescale_R: float=None, rescale_B: float=None,
-                   L_radial: int=4, M_poloidal: int=4, 
+                   L_radial: int=4, M_poloidal: int=4, use_mixed_field: bool=False, 
                    use_stell_sym: bool=True, wall_offset: float=0.0) -> tuple[str, dict]:
         """Load magnetic field data extended beyond last closed flux surface
          from DESC equilibrium and coil files.
@@ -2075,17 +2075,16 @@ class ImportData():
             br_total = (br_coil + br_plasma) * unyt.T
             bphi_total = (bphi_coil + bphi_plasma) * unyt.T 
             bz_total = (bz_coil + bz_plasma) * unyt.T
-
             #get points inside lcfs by finding points where psi < ps1, and then set those points equal to eq.compute values of B
-            #if use_nested:
-            psi1 = eq.Psi * unyt.Wb  # Wb
-            br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
-            bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
-            bz_lcfs = griddata((R, Z), data["B_Z"], (R_2d, Z_2d)) * unyt.T
-            inside_lcfs = psi[:, :, k] < (psi1.value - 1) * unyt.Wb # add a small buffer to ensure we are safely inside lcfs for these points
-            br_total[inside_lcfs] = br_lcfs[inside_lcfs]
-            bphi_total[inside_lcfs] = bphi_lcfs[inside_lcfs]
-            bz_total[inside_lcfs] = bz_lcfs[inside_lcfs]
+            use_mixed_field = True
+            if use_mixed_field:
+                br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
+                bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
+                bz_lcfs = griddata((R, Z), data["B_Z"], (R_2d, Z_2d)) * unyt.T
+                inside_lcfs = psi[:, :, k] < (psi1.value - 1) * unyt.Wb # add a small buffer to ensure we are safely inside lcfs for these points
+                br_total[inside_lcfs] = br_lcfs[inside_lcfs]
+                bphi_total[inside_lcfs] = bphi_lcfs[inside_lcfs]
+                bz_total[inside_lcfs] = bz_lcfs[inside_lcfs]
 
             #Add coil and plasma current contributions for total bfield
             br[:, :, k] = br_total
@@ -2177,7 +2176,9 @@ class ImportData():
             psi_data_new,
             (R_2d, Z_2d),
             fill_value=psi_shell)
-            
+            #making sure the psi inside lcfs matches that of the eq.compute method
+            inside_lcfs = psi[:, :, k] <= (psi1.value) * unyt.Wb
+            psi_extended[inside_lcfs] = psi[inside_lcfs]
 
             #clear cache to prevent memory build up of coils.compute_magnetic_grid
             if k % 50 == 0 and k > 0:
