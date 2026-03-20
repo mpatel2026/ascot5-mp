@@ -2003,7 +2003,7 @@ class ImportData():
             source_grid=source_grid,
             R_bounds=(rmin, rmax),  # R bounds of the computational domain
             Z_bounds=(zmin, zmax),  # Z bounds of the computational domain
-            A_res=32,  # resolution of vector potential A, higher resolution is better (128 is good)
+            A_res=128,  # resolution of vector potential A, higher resolution is better (128 is good)
         )
         time_end_PlasmaField = time.time()
         print(f'finished plasma field in {time_end_PlasmaField - time_start_PlasmaField:.2f} seconds')
@@ -2116,11 +2116,13 @@ class ImportData():
             #After this is done and we have a value of psi for each point in the new layers, interpolate the psi grid and have the fill value 
             # be the psi at the outmost layer
             rho_max = np.max(grid.nodes[:, 0])
+            rho_min = np.min(grid.nodes[:,0])
+            is_center = grid.nodes[:, 0] == rho_min
             is_lcfs = np.isclose(grid.nodes[:, 0], rho_max, atol=1e-8)
             lcfs_r = R[is_lcfs]
             lcfs_z = Z[is_lcfs]
-            center_r = axis_r[k]
-            center_z = axis_z[k]
+            center_r = R[is_center][0]
+            center_z = Z[is_center][0]
 
             # create vectors between all lcfs and center points, create unit vectors.
             vec_r = lcfs_r - center_r
@@ -2177,8 +2179,8 @@ class ImportData():
             (R_2d, Z_2d),
             fill_value=psi_shell)
             #making sure the psi inside lcfs matches that of the eq.compute method
-            inside_lcfs = psi[:, :, k] <= (psi1.value) * unyt.Wb
-            psi_extended[inside_lcfs] = psi[inside_lcfs]
+            #inside_lcfs = psi[:, :, k] <= (psi1.value) * unyt.Wb
+            #psi_extended[inside_lcfs] = psi[inside_lcfs]
 
             #clear cache to prevent memory build up of coils.compute_magnetic_grid
             if k % 50 == 0 and k > 0:
@@ -2344,7 +2346,7 @@ class ImportData():
 
 
     @staticmethod
-    def desc_profiles_extended(fn: str, rhomin: float=0.0, rhomax: float=1.0, 
+    def desc_profiles_extended(fn: str, rhomin: float=0.0, sol_profile: str="decay",
                       nrho: int=100, fraction_T: float=0.5, Zeff: float=1.0,
                       Aimp: int=12, Zimp: int=6, mass_imp: float=12.0) -> tuple[str, dict]:
         """
@@ -2358,6 +2360,8 @@ class ImportData():
             Minimum normalized radius rho. Default = 0.0.
         rhomax : float, optional
             Maximum normalized radius rho. Default = 1.0.
+        sol_profile: string, optional
+            Specify the shape of the sol profile between: "decay" ... Default - "decay"
         nrho : int, optional
             Number of radial grid points. Default = 100.
         fraction_T : float, optional
@@ -2380,13 +2384,14 @@ class ImportData():
             equ = fam[-1]
         except:  # file is already an Equilibrium
             equ = fam
-
-        rho = np.linspace(rhomin, rhomax, nrho)
+        rhosep = 1
+        rho = np.linspace(rhomin, rhosep, nrho)
         grid = dscg.LinearGrid(rho=rho, M=equ.M_grid, N=equ.N_grid, NFP=equ.NFP, sym=False)
-        data = equ.compute(["ne", "Te", "Ti"], grid=grid)
+        data = equ.compute(["ne", "Te", "Ti", 'a'], grid=grid)
         edensity = grid.compress(data["ne"]) * unyt.m**-3
         etemperature = grid.compress(data["Te"]) * unyt.eV
         itemperature = grid.compress(data["Ti"]) * unyt.eV
+        minor_radius = data['a'] * unyt.m
         vtor = np.zeros_like(rho) * unyt.m / unyt.s  # zero toroidal rotation
         # We need now to distinguish between the impurities and main ions. 
         # The impurities are described using Zeff (> 1 implies impurities, = 1 pure plasma,
@@ -2398,29 +2403,39 @@ class ImportData():
         # at rhomax = 1.0, we will artificially expand the data beyond to rho=2.0, 
         # by adding zeros.
         drho = rho[1] - rho[0]
-        rho_extra = np.arange(rhomax + drho, 2.0 + drho, drho)
+        rho_extra = np.arange(rhosep + drho, 2.0 + drho, drho)
         nrho_extra = len(rho_extra)
+
+        #SOL_mask = (rho_extra > rhosep) & (rho_extra < rhomax)
+        lmbda = (10 *unyt.cm) / minor_radius
+        #since nrho extra already gets rho's from 1-2, we just need to create edensity_extra, etemperature_extra, etc which starts as just all zeros 
+        #and then we can fill in the indicies which correspond to rhos within rhomax with values extrapolated by decaying from separatrix
+        edensity[-1] = edensity[-2]
+        edensity_lcfs = edensity[-1]
+        etemperature[-1] = etemperature[-2]
+        etemperature_lcfs = etemperature[-1]
+        itemperature[-1] = itemperature[-2]
+        itemperature_lcfs = itemperature[-1]
+        vtor[-1] = vtor[-2]
+        vtor_lcfs = vtor[-1]
+
+        if sol_profile == "decay"
+            edensity_extra = edensity_lcfs * np.exp(-(rho_extra - rhosep)  / lmbda) 
+            etemperature_extra = etemperature_lcfs * np.exp(-(rho_extra - rhosep) / lmbda) 
+            itemperature_extra = itemperature_lcfs * np.exp(-(rho_extra - rhosep) / lmbda)                                                                                
+            vtor_extra = vtor_lcfs * np.exp(-(rho_extra - rhosep) / lmbda)
+        if sol_profile == "flat"
+            edensity_extra = np.full_like(rho_extra, edensity_lcfs)
+            etemperature_extra =  np.full_like(rho_extra, etemperature_lcfs)
+            itemperature_extra =  np.full_like(rho_extra, itemperature_lcfs)                                                                           
+            vtor_extra =  np.full_like(rho_extra, vtor_lcfs)
+
+
         rho = np.concatenate((rho, rho_extra))
-        edensity = unyt.unyt_array(
-            np.concatenate((edensity.to('m**-3').value, 
-                            np.zeros(nrho_extra) + 1e15)), 
-            'm**-3'
-        )
-        etemperature = unyt.unyt_array(
-            np.concatenate((etemperature.to('eV').value, 
-                            np.zeros(nrho_extra) + 1.0)), 
-            'eV'
-        )
-        itemperature = unyt.unyt_array(
-            np.concatenate((itemperature.to('eV').value, 
-                            np.zeros(nrho_extra) + 1.0)), 
-            'eV'
-        )
-        vtor = unyt.unyt_array(
-            np.concatenate((vtor.to('m/s').value, 
-                            np.zeros(nrho_extra))), 
-            'm/s'
-        )
+        edensity = unyt.unyt_array(np.concatenate((edensity,edensity_extra)), 'm**-3')
+        etemperature = unyt.unyt_array(np.concatenate((etemperature, etemperature_extra)),'eV')
+        itemperature = unyt.unyt_array(np.concatenate((itemperature,itemperature_extra)), 'eV')
+        vtor = unyt.unyt_array(np.concatenate((vtor, vtor_extra)), 'm/s')
 
         nion = 2
         nimp = (Zeff - 1.0) * edensity / (Zimp**2 - Zimp * Zeff + Zeff)
