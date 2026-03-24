@@ -2425,11 +2425,10 @@ class ImportData():
             itemperature_extra = itemperature_lcfs * np.exp(-(rho_extra - rhosep) / lmbda)                                                                                
             vtor_extra = vtor_lcfs * np.exp(-(rho_extra - rhosep) / lmbda)
         if sol_profile == "flat":
-            edensity_extra = np.full_like(rho_extra, edensity_lcfs)
-            etemperature_extra =  np.full_like(rho_extra, etemperature_lcfs)
-            itemperature_extra =  np.full_like(rho_extra, itemperature_lcfs)                                                                           
-            vtor_extra =  np.full_like(rho_extra, vtor_lcfs)
-
+            edensity_extra = edensity_lcfs * np.ones_like(rho_extra)
+            etemperature_extra = etemperature_lcfs * np.ones_like(rho_extra)
+            itemperature_extra = itemperature_lcfs * np.ones_like(rho_extra)
+            vtor_extra = vtor_lcfs * np.ones_like(rho_extra)
 
         rho = np.concatenate((rho, rho_extra))
         edensity = unyt.unyt_array(np.concatenate((edensity,edensity_extra)), 'm**-3')
