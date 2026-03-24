@@ -2786,7 +2786,7 @@ class ImportData():
     @staticmethod
     def import_desc_conformal_offset_wall(fn: str,
                                           wall_offset: float = 0.0,
-                                          cell_area: float = 0.002,
+                                          cell_area: float = 0.02,
                                  rescale_R: float | None = None,
                                  rescale_B: float | None = None,
                                  ) -> tuple[str, dict]:
@@ -2851,7 +2851,7 @@ class ImportData():
         )
         data = eq.compute(["S"], grid=grid)
         surface_area = data["S"]
-        avg_area = surface_area / (360 * 1024)
+        avg_area = surface_area / (2 * 360 * 1024) #There are 360 * 1024 squares by squares by default and each square gets cut into two cells
         rescale_ntri = np.sqrt(avg_area / cell_area)
         
         #rescale resolution in ntheta and nzeta depending on desired cell area
