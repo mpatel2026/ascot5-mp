@@ -2419,12 +2419,12 @@ class ImportData():
         vtor[-1] = vtor[-2]
         vtor_lcfs = vtor[-1]
 
-        if sol_profile == "decay"
+        if sol_profile == "decay":
             edensity_extra = edensity_lcfs * np.exp(-(rho_extra - rhosep)  / lmbda) 
             etemperature_extra = etemperature_lcfs * np.exp(-(rho_extra - rhosep) / lmbda) 
             itemperature_extra = itemperature_lcfs * np.exp(-(rho_extra - rhosep) / lmbda)                                                                                
             vtor_extra = vtor_lcfs * np.exp(-(rho_extra - rhosep) / lmbda)
-        if sol_profile == "flat"
+        if sol_profile == "flat":
             edensity_extra = np.full_like(rho_extra, edensity_lcfs)
             etemperature_extra =  np.full_like(rho_extra, etemperature_lcfs)
             itemperature_extra =  np.full_like(rho_extra, itemperature_lcfs)                                                                           
