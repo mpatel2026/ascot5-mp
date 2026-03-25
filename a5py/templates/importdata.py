@@ -2076,7 +2076,6 @@ class ImportData():
             bphi_total = (bphi_coil + bphi_plasma) * unyt.T 
             bz_total = (bz_coil + bz_plasma) * unyt.T
             #get points inside lcfs by finding points where psi < ps1, and then set those points equal to eq.compute values of B
-            use_mixed_field = True
             if use_mixed_field:
                 br_lcfs = griddata((R, Z), data["B_R"], (R_2d, Z_2d)) * unyt.T
                 bphi_lcfs = griddata((R, Z), data["B_phi"], (R_2d, Z_2d)) * unyt.T
