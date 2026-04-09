@@ -2123,13 +2123,33 @@ class ImportData():
             center_r = R[is_center][0]
             center_z = Z[is_center][0]
 
-            # create vectors between all lcfs and center points, create unit vectors.
-            vec_r = lcfs_r - center_r
-            vec_z = lcfs_z - center_z
-            vec_mag = np.sqrt(vec_r**2 + vec_z**2)
+            # 1. Calculate the tangent vectors along the boundary curve
+            dr = np.roll(lcfs_r, -1) - np.roll(lcfs_r, 1)
+            dz = np.roll(lcfs_z, -1) - np.roll(lcfs_z, 1)
 
-            unit_r = vec_r / vec_mag
-            unit_z = vec_z / vec_mag
+            # 2. Calculate the perpendicular (normal) vectors
+            # In 2D, the normal to a tangent vector (dr, dz) is (-dz, dr)
+            norm_r = -dz
+            norm_z = dr
+
+            # 3. Ensure they point outward (away from the center)
+            # The boundary points could be ordered clockwise or counter-clockwise, meaning
+            # (-dz, dr) might point entirely inward or entirely outward. 
+            # We take the dot product with the center-pointing vectors to check.
+            radial_r = lcfs_r - center_r
+            radial_z = lcfs_z - center_z
+            dot_product = (norm_r * radial_r) + (norm_z * radial_z)
+
+            # If the dot product is negative, the normal points inward, so we flip it
+            flip_mask = dot_product < 0
+            norm_r[flip_mask] *= -1
+            norm_z[flip_mask] *= -1
+
+            # 4. Normalize to create unit vectors
+            vec_mag = np.sqrt(norm_r**2 + norm_z**2)
+
+            unit_r = norm_r / vec_mag
+            unit_z = norm_z / vec_mag
 
             #set up several shells of conformal offsets and calculate psi for each shell
             step_size = 0.5 * unyt.cm
@@ -2884,13 +2904,45 @@ class ImportData():
         center_r = axis_r[np.newaxis, :] * unyt.m
         center_z = axis_z[np.newaxis, :] * unyt.m
 
-        # create vectors between all lcfs and center points, create unit vectors, and extend the lcfs points by unit vectors times wall offset to get wall points
-        vec_r = lcfs_r - center_r
-        vec_z = lcfs_z - center_z
-        vec_mag = np.sqrt(vec_r**2 + vec_z**2)
+        # 1. Get neighboring points one step up and down along the theta axis (axis=0)
+        # np.roll wraps boundaries automatically, treating the poloidal contour as closed
+        r_up = np.roll(lcfs_r, shift=-1, axis=0)
+        r_down = np.roll(lcfs_r, shift=1, axis=0)
+        z_up = np.roll(lcfs_z, shift=-1, axis=0)
+        z_down = np.roll(lcfs_z, shift=1, axis=0)
 
-        unit_r = vec_r / vec_mag
-        unit_z = vec_z / vec_mag
+        # 2. Calculate the tangent vector between the neighbors
+        dr = r_up - r_down
+        dz = z_up - z_down
+
+        # 3. Calculate the perpendicular (normal) vector components
+        # If a vector is (X, Y), its 2D perpendicular is (Y, -X) or (-Y, X)
+        perp_r = dz
+        perp_z = -dr
+
+        # 4. Normalize the perpendicular vector to get unit normals
+        perp_mag = np.sqrt(perp_r**2 + perp_z**2)
+        
+        # (Optional safeguard against division by zero for degenerate points)
+        perp_mag = np.where(perp_mag == 0, 1e-10 * unyt.m, perp_mag)
+
+        unit_r = perp_r / perp_mag
+        unit_z = perp_z / perp_mag
+
+        # 5. Ensure the normal vectors point OUTWARD
+        # We calculate the old center-to-boundary vector just to check the direction
+        radial_r = lcfs_r - center_r
+        radial_z = lcfs_z - center_z
+        
+        # Take the dot product of the normal vector and the radial vector
+        dot_prod = (unit_r * radial_r) + (unit_z * radial_z)
+        
+        # If the dot product is negative, the normal is pointing inward. 
+        # Create an array of 1s and -1s to flip the inward-pointing vectors.
+        direction_flip = np.where(dot_prod < 0, -1, 1)
+        
+        unit_r = unit_r * direction_flip
+        unit_z = unit_z * direction_flip
 
         # Resulting wall arrays (2D)
         wall_r = (lcfs_r + wall_offset * unit_r).in_units('m').value
