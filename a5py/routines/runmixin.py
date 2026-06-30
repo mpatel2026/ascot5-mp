@@ -2101,6 +2101,119 @@ class RunMixin(DistMixin):
         axes.set_xticks([0, 90, 180, 270, 360])
         axes.set_yticks([-180, -90, 0, 90, 180])
 
+    def plotwall_torpol_new(self, qnt='eload', getaxis=None, log=True, clim=None,
+                            cmap=None, axes=None, cax=None):
+        """
+        Plot a square toroidal-poloidal map using angles (degrees).
+        
+        Uses a smoothened magnetic axis to ensure the poloidal angle 
+        calculation is stable and free of numerical jitter.
+        """
+        import numpy as np
+
+        # --- 1. Load Wall Data and Physics Quantity ---
+        d = self.wall.read()
+        if qnt == 'label':
+            wetted = np.arange(d["nelements"]) + 1
+            x1x2x3, y1y2y3, z1z2z3 = d["x1x2x3"], d["y1y2y3"], d["z1z2z3"]
+            color = d["flag"].ravel()
+            clabel, cmap = r"Label", cmap or 'viridis'
+        elif isinstance(qnt, str):
+            wetted, area, edepo, pdepo, iangle = self.getwall_loads()
+            x1x2x3 = d["x1x2x3"][wetted-1]
+            y1y2y3 = d["y1y2y3"][wetted-1]
+            z1z2z3 = d["z1z2z3"][wetted-1]
+            if qnt == 'eload':
+                color, clabel, cmap = edepo/area, r"Wall load [W/m$^2$]", cmap or 'Reds'
+            elif qnt == 'pload':
+                color, clabel, cmap = pdepo/area, r"Particle flux [prt s$^{-1}$m$^{-2}$]", cmap or 'Reds'
+            else:
+                color, clabel, cmap = iangle, r"Angle of incidence [deg]", cmap or 'viridis'
+        else:
+            wetted = qnt[0]
+            x1x2x3 = d["x1x2x3"][wetted-1]
+            y1y2y3 = d["y1y2y3"][wetted-1]
+            z1z2z3 = d["z1z2z3"][wetted-1]
+            color, clabel, cmap = np.array(qnt[1]), r"", cmap or 'Reds'
+
+        nelement = color.size
+        # Raw Toroidal Angle
+        tor_deg = np.rad2deg(np.arctan2(y1y2y3, x1x2x3))
+        rmajor = np.sqrt(x1x2x3**2 + y1y2y3**2)
+
+        # --- 2. Define Smoothened Magnetic Axis ---
+        # This remains implemented to ensure the poloidal origin is stable
+        if getaxis is None:
+            dummy = np.ones(tor_deg.size)
+            out = self._root._ascot._eval_bfield(dummy, np.deg2rad(tor_deg.flatten()), 
+                                                dummy, dummy, evalaxis=True)
+            axisr_raw = out["axisr"].v.reshape(tor_deg.shape)
+            axisz_raw = out["axisz"].v.reshape(tor_deg.shape)
+        elif isinstance(getaxis, tuple):
+            axisr_raw, axisz_raw = np.full(tor_deg.shape, getaxis[0]), np.full(tor_deg.shape, getaxis[1])
+        elif callable(getaxis):
+            try:
+                import unyt
+                res = getaxis(tor_deg * unyt.deg)
+            except:
+                res = getaxis(tor_deg)
+            axisr_raw = res[0].v if hasattr(res[0], 'v') else res[0]
+            axisz_raw = res[1].v if hasattr(res[1], 'v') else res[1]
+
+        # Helper to smoothen the axis and kill numerical noise
+        def smooth_axis(arr, window=50):
+            if arr.size < window: return arr
+            filt = np.ones(window)/window
+            padded = np.pad(arr.flatten(), (window, window), mode='edge')
+            smoothed = np.convolve(padded, filt, mode='same')
+            return smoothed[window:-window].reshape(arr.shape)
+
+        axisr = smooth_axis(axisr_raw)
+        axisz = smooth_axis(axisz_raw)
+
+        # --- 3. Calculate Angular Coordinates ---
+        # Poloidal angle is now calculated relative to the "calmed" axis
+        pol_deg = np.rad2deg(np.arctan2(z1z2z3 - axisz, rmajor - axisr))
+        rminor = np.sqrt((rmajor - axisr)**2 + (z1z2z3 - axisz)**2)
+        
+        # Normalize Toroidal Angle to 0-360 range
+        tor_plot = np.mod(tor_deg, 360)
+        pol_plot = pol_deg # Usually -180 to 180
+
+        # --- 4. Clean Periodic Wrap-around for Triangles ---
+        # Handle toroidal jumps (360 -> 0)
+        dx = (np.amax(tor_plot, axis=1) - np.amin(tor_plot, axis=1)) > 180.0
+        if np.any(dx):
+            tor_plot[dx, :] = np.where(tor_plot[dx, :] < 180.0, tor_plot[dx, :] + 360.0, tor_plot[dx, :])
+
+        # Handle poloidal jumps (180 -> -180)
+        dy = (np.amax(pol_plot, axis=1) - np.amin(pol_plot, axis=1)) > 180.0
+        if np.any(dy):
+            pol_plot[dy, :] = np.where(pol_plot[dy, :] < 0, pol_plot[dy, :] + 360.0, pol_plot[dy, :])
+
+        # Ensure all toroidal values are >= 0
+        if np.any(np.amin(tor_plot, axis=1) < 0):
+            tor_plot[np.amin(tor_plot, axis=1) < 0, :] += 360.0
+
+        # --- 5. Depth Sorting and Plotting ---
+        # Draw foreground triangles last (those furthest from axis)
+        idx = np.flipud(np.argsort(np.amin(rminor, axis=1), axis=0))
+        patches = np.zeros((nelement, 3, 2))
+        patches[:, :, 0] = tor_plot[idx, :]
+        patches[:, :, 1] = pol_plot[idx, :]
+
+        a5plt.triangularpatch(
+            patches, color[idx], xlim=[-2, 362], ylim=[-182, 182], clim=clim,
+            log=log, axes=axes, cax=cax, clabel=clabel, cmap=cmap,
+            xlabel="Toroidal Angle [deg]", ylabel="Poloidal Angle [deg]"
+        )
+
+        if axes is not None:
+            axes.set_aspect('auto') 
+            axes.set_box_aspect(1) # Keeps the plot square
+            axes.set_xticks([0, 90, 180, 270, 360])
+            axes.set_yticks([-180, -90, 0, 90, 180])
+
     def plotwall_3dstill(
             self,
             wallmesh=None,

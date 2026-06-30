@@ -209,13 +209,14 @@ class MarkerGenerator():
             return mrk
 
         # Create output distributions
-        vol = markerdist.phasespacevolume()
+        vol = particledist.phasespacevolume()
         mrkdist = markerdist._copy()
-        d = mrkdist._distribution.ravel().v * 0
+        prtdist = particledist._copy()
+
+        d = prtdist._distribution.ravel().v * 0
         np.add.at(d, icell, 1)
         mrkdist._distribution = d.reshape(vol.shape) / vol.units
 
-        prtdist = particledist._copy()
         d = prtdist._distribution.ravel().v * 0
         np.add.at(d, icell, mrk["weight"].v)
         prtdist._distribution = d.reshape(vol.shape) / vol

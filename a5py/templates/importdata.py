@@ -2161,46 +2161,48 @@ class ImportData():
             shells_psi = []
 
             # Resulting shell arrays (2D)
-            for d in offsets:
-                # Calculate the points for this specific offset layer
-                # Note: we ensure d is in meters to match lcfs_r/z
-                offset_r = (lcfs_r + d.to('m').value * unit_r)
-                offset_z = (lcfs_z + d.to('m').value * unit_z)
-                #calculate psi by integrating bphi inside layer
-                polygon = np.column_stack((offset_r, offset_z))
-                path = Path(polygon)
-                all_points = np.column_stack((R_2d.flatten(), Z_2d.flatten()))
-                inside_shell_mask = path.contains_points(all_points).reshape(nr,nz)
-                dr = (rmax - rmin) / (nr-1)
-                dz = (zmax - zmin) / (nz-1)
-                dA = dr * dz
-                layer_flux = np.sum(bphi_total[inside_shell_mask]) * dA
-                offset_psi = np.full_like(offset_r, layer_flux)
+            if bfield_offset > 0:
+                for d in offsets:
+                    # Calculate the points for this specific offset layer
+                    # Note: we ensure d is in meters to match lcfs_r/z
+                    offset_r = (lcfs_r + d.to('m').value * unit_r)
+                    offset_z = (lcfs_z + d.to('m').value * unit_z)
+                    #calculate psi by integrating bphi inside layer
+                    polygon = np.column_stack((offset_r, offset_z))
+                    path = Path(polygon)
+                    all_points = np.column_stack((R_2d.flatten(), Z_2d.flatten()))
+                    inside_shell_mask = path.contains_points(all_points).reshape(nr,nz)
+                    dr = (rmax - rmin) / (nr-1)
+                    dz = (zmax - zmin) / (nz-1)
+                    dA = dr * dz
+                    layer_flux = np.sum(bphi_total[inside_shell_mask]) * dA
+                    offset_psi = np.full_like(offset_r, layer_flux)
 
-                shells_r.append(offset_r)
-                shells_z.append(offset_z)
-                shells_psi.append(offset_psi)
+                    shells_r.append(offset_r)
+                    shells_z.append(offset_z)
+                    shells_psi.append(offset_psi)
 
-            #Adding the new R, Z, and psi data from outside the lcfs into the original R,Z, psi_data arrays
-            psi_shell = shells_psi[-1][0]
-            R_outside = np.array(shells_r).flatten()
-            Z_outside = np.array(shells_z).flatten()
-            psi_outside = np.array(shells_psi).flatten()
-            R_new = np.concatenate([R, R_outside])
-            Z_new = np.concatenate([Z, Z_outside])
-            psi_data_new = np.concatenate([psi_data_2pi, psi_outside])
+                #Adding the new R, Z, and psi data from outside the lcfs into the original R,Z, psi_data arrays
+                psi_shell = shells_psi[-1][0]
+                R_outside = np.array(shells_r).flatten()
+                Z_outside = np.array(shells_z).flatten()
+                psi_outside = np.array(shells_psi).flatten()
+                R_new = np.concatenate([R, R_outside])
+                Z_new = np.concatenate([Z, Z_outside])
+                psi_data_new = np.concatenate([psi_data_2pi, psi_outside])
 
-            #interpolating complete inside + outside lcfs data onto R_2d grid. With the fill value being the psi of the outermost shell
+                #interpolating complete inside + outside lcfs data onto R_2d grid. With the fill value being the psi of the outermost shell
 
-            psi_extended[:, :, k] = griddata(
-            (R_new, Z_new),
-            psi_data_new,
-            (R_2d, Z_2d),
-            fill_value=psi_shell)
-            #making sure the psi inside lcfs matches that of the eq.compute method
-            #inside_lcfs = psi[:, :, k] <= (psi1.value) * unyt.Wb
-            #psi_extended[inside_lcfs] = psi[inside_lcfs]
-
+                psi_extended[:, :, k] = griddata(
+                (R_new, Z_new),
+                psi_data_new,
+                (R_2d, Z_2d),
+                fill_value=psi_shell)
+                #making sure the psi inside lcfs matches that of the eq.compute method
+                #inside_lcfs = psi[:, :, k] <= (psi1.value) * unyt.Wb
+                #psi_extended[inside_lcfs] = psi[inside_lcfs]
+            else:
+                psi_extended[:,:,k] = psi[:,:,k]
             #clear cache to prevent memory build up of coils.compute_magnetic_grid
             if k % 50 == 0 and k > 0:
                 jax.clear_caches()
@@ -2865,16 +2867,16 @@ class ImportData():
         
         #calculate the surface area of lcfs and the average area of each triangle for the default settings
         grid = dscg.LinearGrid(
-            rho=1.0, theta=360, zeta=1024, NFP=1, sym=False, endpoint=True
+            rho=1.0, theta=360, zeta=360, NFP=1, sym=False, endpoint=True
         )
         data = eq.compute(["S"], grid=grid)
         surface_area = data["S"]
-        avg_area = surface_area / (2 * 360 * 1024) #There are 360 * 1024 squares by squares by default and each square gets cut into two cells
+        avg_area = surface_area / (2 * 360 * 360) #There are 360 * 360 squares by squares by default and each square gets cut into two cells
         rescale_ntri = np.sqrt(avg_area / cell_area)
         
         #rescale resolution in ntheta and nzeta depending on desired cell area
         ntheta = round(360 * rescale_ntri)
-        nzeta = round(1024 * rescale_ntri) 
+        nzeta = round(360 * rescale_ntri) 
         # boundary
         grid = dscg.LinearGrid(
             rho=1.0, theta=ntheta, zeta=nzeta, NFP=1, sym=False, endpoint=True
@@ -2956,6 +2958,237 @@ class ImportData():
         X = wall_r * np.cos(phi)
         Y = wall_r * np.sin(phi)
         Z = wall_z
+
+
+        # We now build the triangles.
+        vertices = np.column_stack([
+            X.ravel(),
+            Y.ravel(),
+            Z.ravel()
+        ])
+
+        # Create triangles
+        triangles = []
+        ntheta = bdry_r.shape[0]
+        nphi = bdry_r.shape[1]
+        for i in range(ntheta):
+            for j in range(nphi):
+                p0 = i * nphi + j
+                p1 = i * nphi + (j + 1) % nphi
+                p2 = ((i + 1) % ntheta) * nphi + j
+                p3 = ((i + 1) % ntheta) * nphi + (j + 1) % nphi
+                triangles.append([p0, p2, p1])
+                triangles.append([p1, p2, p3])
+        triangles = np.asarray(triangles, dtype=int)
+
+        # We now need to build the point structures as in ASCOT wall.
+        ntri = triangles.shape[0]
+        x1x2x3 = np.zeros((ntri, 3))
+        y1y2y3 = np.zeros((ntri, 3))
+        z1z2z3 = np.zeros((ntri, 3))
+        for itri in range(ntri):
+            for ivec in range(3):
+                ipoint = triangles[itri, ivec]
+                x1x2x3[itri, ivec] = vertices[ipoint, 0]
+                y1y2y3[itri, ivec] = vertices[ipoint, 1]
+                z1z2z3[itri, ivec] = vertices[ipoint, 2]
+        n = ntri // (2*nphi)
+
+        # Generating the 3D wall data.
+        wall = {"nelements" : ntri, "x1x2x3" : x1x2x3,
+                "y1y2y3" : y1y2y3, "z1z2z3" : z1z2z3}
+        
+        return ("wall_3D", wall)
+    
+    @staticmethod
+    def import_desc_conformal_offset_wall_angular(fn: str,
+                                          wall_offset: float = 0.0,
+                                          cell_area: float = 0.02,
+                                 rescale_R: float | None = None,
+                                 rescale_B: float | None = None,
+                                 ) -> tuple[str, dict]:
+        """Import the LCFS from a DESC equilibrium as a wall for ASCOT.
+
+        Parameters
+        ----------
+        fn : str
+            File path to DESC HDF5 output.
+        wall_offset: float, optional
+            Distance (in cm) offset from lcfs at which to set the wall mesh. Default = 0 cm
+        cell_area: float, optional
+            Target area (in m^2) of each triangle in the wall mesh. Default = 1 m^2
+        npoints : int, optional
+            Number of points to use for the wall representation. Default = 1000.
+        Returns
+        -------
+        gtype : str
+            Type of the generated input data.
+        data : dict
+            Input data that can be passed to ``write_hdf5`` method of
+            a corresponding type.
+        """
+        if not os.path.isfile(fn):
+            raise FileNotFoundError(f"DESC file {fn} not found.")
+
+        if wall_offset < 0:
+            raise ValueError("Wall offset must be >= 0.")
+        
+        if not hasattr(wall_offset, 'units'):
+            # Assume it was meant to be cm if no units provided
+            wall_offset = wall_offset * unyt.cm
+        else:
+            wall_offset = wall_offset.to(unyt.cm)
+
+        if cell_area <= 0:
+            raise ValueError("cell_area must be > 0.") 
+        
+        if not hasattr(cell_area, 'units'):
+            # Assume it was meant to be m^2 if no units provided
+            cell_area = cell_area * unyt.m**2
+        else:
+            cell_area = cell_area.to(unyt.m**2)
+           
+        fam = dscio.load(fn, file_format="hdf5")
+        try:  # if file is an EquilibriaFamily, use final Equilibrium
+            eq = fam[-1]
+        except:  # file is already an Equilibrium
+            eq = fam
+
+        if (rescale_R is not None) and (rescale_B is not None):
+            eq = rescale(eq, L=("R0", rescale_R), B=("B0", rescale_B))
+        elif rescale_R is not None:
+            eq = rescale(eq, L=("R0", rescale_R))
+        elif rescale_B is not None:
+            eq = rescale(eq, B=("B0", rescale_B))
+
+        
+        #calculate the surface area of lcfs and the average area of each triangle for the default settings
+        grid = dscg.LinearGrid(
+            rho=1.0, theta=360, zeta=360, NFP=1, sym=False, endpoint=True
+        )
+        data = eq.compute(["S"], grid=grid)
+        surface_area = data["S"]
+        avg_area = surface_area / (2 * 360 * 360) #There are 360 * 360 squares by squares by default and each square gets cut into two cells
+        rescale_ntri = np.sqrt(avg_area / cell_area)
+        
+        #rescale resolution in ntheta and nzeta depending on desired cell area
+        ntheta = round(360 * rescale_ntri)
+        nzeta = round(360 * rescale_ntri) 
+        # boundary
+        grid = dscg.LinearGrid(
+            rho=1.0, theta=ntheta, zeta=nzeta, NFP=1, sym=False, endpoint=True
+        )
+        data = eq.compute(["R", "Z"], grid=grid)
+        bdry_r = data["R"].reshape((grid.num_zeta, grid.num_theta), order="C").T
+        bdry_z = data["Z"].reshape((grid.num_zeta, grid.num_theta), order="C").T
+        
+
+        #compute axis points 
+        grid_axis = dscg.LinearGrid(rho=0.0, zeta=nzeta, NFP=1)
+        data_axis = eq.compute(["R", "Z"], grid=grid_axis)
+        axis_r = data_axis["R"]  # m
+        axis_z = data_axis["Z"]  # m
+
+        # We now generate the points.
+        bdry_r = np.array(bdry_r)
+        bdry_z = np.array(bdry_z)
+        phi    = np.linspace(0, 2*np.pi, bdry_r.shape[1], endpoint=False)
+        phi = np.tile(phi, (bdry_r.shape[0], 1))
+
+        # Attach units to the whole 2D arrays at once
+        lcfs_r = bdry_r * unyt.m
+        lcfs_z = bdry_z * unyt.m
+
+        # Reshape axis arrays to (1, nzeta) to allow broadcasting across the (ntheta, nzeta) lcfs arrays
+        center_r = axis_r[np.newaxis, :] * unyt.m
+        center_z = axis_z[np.newaxis, :] * unyt.m
+
+        # 1. Get neighboring points one step up and down along the theta axis (axis=0)
+        # np.roll wraps boundaries automatically, treating the poloidal contour as closed
+        r_up = np.roll(lcfs_r, shift=-1, axis=0)
+        r_down = np.roll(lcfs_r, shift=1, axis=0)
+        z_up = np.roll(lcfs_z, shift=-1, axis=0)
+        z_down = np.roll(lcfs_z, shift=1, axis=0)
+
+        # 2. Calculate the tangent vector between the neighbors
+        dr = r_up - r_down
+        dz = z_up - z_down
+
+        # 3. Calculate the perpendicular (normal) vector components
+        # If a vector is (X, Y), its 2D perpendicular is (Y, -X) or (-Y, X)
+        perp_r = dz
+        perp_z = -dr
+
+        # 4. Normalize the perpendicular vector to get unit normals
+        perp_mag = np.sqrt(perp_r**2 + perp_z**2)
+        
+        # (Optional safeguard against division by zero for degenerate points)
+        perp_mag = np.where(perp_mag == 0, 1e-10 * unyt.m, perp_mag)
+
+        unit_r = perp_r / perp_mag
+        unit_z = perp_z / perp_mag
+
+        # 5. Ensure the normal vectors point OUTWARD
+        # We calculate the old center-to-boundary vector just to check the direction
+        radial_r = lcfs_r - center_r
+        radial_z = lcfs_z - center_z
+        
+        # Take the dot product of the normal vector and the radial vector
+        dot_prod = (unit_r * radial_r) + (unit_z * radial_z)
+        
+        # If the dot product is negative, the normal is pointing inward. 
+        # Create an array of 1s and -1s to flip the inward-pointing vectors.
+        direction_flip = np.where(dot_prod < 0, -1, 1)
+        
+        unit_r = unit_r * direction_flip
+        unit_z = unit_z * direction_flip
+
+        # Resulting wall arrays (2D)
+        wall_r = (lcfs_r + wall_offset * unit_r).in_units('m').value
+        wall_z = (lcfs_z + wall_offset * unit_z).in_units('m').value
+
+            
+        ntheta, nphi = wall_r.shape
+        new_r = np.zeros_like(wall_r)
+        new_z = np.zeros_like(wall_z)
+
+        # 1. Calculate current geometric angles (relative to the magnetic axis)
+        # np.arctan2 returns values in (-pi, pi], we use % (2*pi) to get [0, 2pi)
+        theta_geom = np.arctan2(wall_z - center_z.in_units('m').value, wall_r - center_r.in_units('m').value) % (2 * np.pi)
+
+        # 2. Define the target uniform poloidal grid
+        theta_target = np.linspace(0, 2 * np.pi, ntheta, endpoint=False)
+
+        # 3. Interpolate R and Z for each toroidal slice
+        for j in range(nphi):
+            # Extract the current slice data
+            r_slice = wall_r[:, j]
+            z_slice = wall_z[:, j]
+            t_slice = theta_geom[:, j]
+
+            # Sort by angle to ensure the interpolator works correctly
+            # (In some stellarator configurations, the computational theta may 
+            # not be strictly monotonic with geometric theta)
+            idx = np.argsort(t_slice)
+            t_sorted = t_slice[idx]
+            r_sorted = r_slice[idx]
+            z_sorted = z_slice[idx]
+
+            # Handle periodicity: pad the sorted arrays so 0 and 2pi wrap correctly
+            t_padded = np.concatenate(([t_sorted[-1] - 2*np.pi], t_sorted, [t_sorted[0] + 2*np.pi]))
+            r_padded = np.concatenate(([r_sorted[-1]], r_sorted, [r_sorted[0]]))
+            z_padded = np.concatenate(([z_sorted[-1]], z_sorted, [z_sorted[0]]))
+
+            # Interpolate the new R and Z values at the target uniform angles
+            new_r[:, j] = np.interp(theta_target, t_padded, r_padded)
+            new_z[:, j] = np.interp(theta_target, t_padded, z_padded)
+        
+        # --- End of Transform ---
+        print("Completed conformal transformation to uniform-angle coordinates.")
+        # Convert expanded points into XYZ using the new uniform-angle coordinates
+        X = new_r * np.cos(phi)
+        Y = new_r * np.sin(phi)
+        Z = new_z
 
 
         # We now build the triangles.
