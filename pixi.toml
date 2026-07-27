@@ -1,0 +1,105 @@
+[workspace]
+name = "ascot5"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+# Toolchain + a5py runtime, mirroring environment.yaml.
+c-compiler = "*"
+make = "*"
+llvm-openmp = "*"
+python = ">=3.10,<3.13"
+zlib = "*"
+setuptools = "*"
+pip = "*"
+ipython = "*"
+numpy = "*"
+scipy = "*"
+xmlschema = "*"
+unyt = "<3.1"
+wurlitzer = "*"
+matplotlib = "*"
+pyvista = "*"
+freeqdsk = "*"
+# conda-forge packages instead of the pip installs in environment.yaml
+desc-opt = "*"
+netcdf4 = "*"
+
+[pypi-dependencies]
+a5py = { path = ".", editable = true }   # replaces `pip install -e .`
+
+[tasks]
+# Sequential sub-makes: the root Makefile's targets share object files in
+# src/, so parallelism is per-target (-j) not across targets. ASCOT_MPI is
+# empty in the default env; the mpi/extmpi features set it to "MPI=1" via
+# activation env so the same task builds with h5pcc there.
+build = "make libascot $ASCOT_MPI -j && make ascot5_main $ASCOT_MPI -j && make bbnbi5 $ASCOT_MPI -j"
+clean = "make clean"
+
+# --- serial HDF5 (h5cc builds) ------------------------------------------
+[feature.nompi.dependencies]
+hdf5 = { build = "nompi*" }
+h5py = "*"   # solver picks the serial build to match nompi hdf5
+
+# --- WSL MPI: full conda-forge OpenMPI (also the AWS fallback stack) -----
+[feature.mpi.dependencies]
+openmpi = "5.*"
+hdf5 = { build = "mpi_openmpi*" }
+h5py = { build = "mpi_openmpi*" }
+mpi4py = "*"
+
+[feature.mpi.activation.env]
+ASCOT_MPI = "MPI=1"   # root Makefile flag: selects h5pcc + -DMPI
+
+# --- AWS: external MPI stub; system OpenMPI 5 + EFA at runtime -----------
+# External stubs live on a label channel since Dec 2025, see
+# https://github.com/conda-forge/openmpi-feedstock/issues/218
+[feature.extmpi]
+channels = ["conda-forge/label/mpi-external"]
+
+[feature.extmpi.dependencies]
+openmpi = { version = "5.*", build = "external_*" }
+hdf5 = { build = "mpi_openmpi*" }
+h5py = { build = "mpi_openmpi*" }
+mpi4py = "*"
+
+[feature.extmpi.activation.env]
+ASCOT_MPI = "MPI=1"   # root Makefile flag: selects h5pcc + -DMPI
+
+[feature.aws.activation]
+scripts = ["tools/aws-activation.sh"]
+
+[feature.aws.activation.env]
+HDF5_USE_FILE_LOCKING = "FALSE"   # FSx (Lustre) has no flock(); required for .h5 writes
+
+[feature.aws.tasks.run-ascot]
+description = "Run ascot5_main on compute nodes (srun --mpi=pmix, 2 ranks x 96 threads per hpc7a node). Run from the directory containing the input file."
+args = [
+  { arg = "infile", default = "ascot.h5" },
+  { arg = "nodes", default = "2" },
+  { arg = "time", default = "4:00:00" },
+]
+env = { OMP_NUM_THREADS = "96", OMP_PLACES = "threads", OMP_PROC_BIND = "spread" }
+cmd = """
+bash -c 'set -o pipefail; cd "$INIT_CWD" && mkdir -p logs && srun --mpi=pmix --nodes={{ nodes }} --ntasks-per-node=2 --cpus-per-task=96 --partition=hpc7a-96xlarge --time={{ time }} --exclusive "$PIXI_PROJECT_ROOT/build/ascot5_main" --in="{{ infile }}" 2>&1 | tee "logs/run-ascot_$(date -u +%Y%m%dT%H%M%SZ).log"'
+"""
+
+# --- clang2py binding regeneration (from environment-dev.yaml) ----------
+[feature.bindings.dependencies]
+clang = "15.*"
+clang-tools = "15.*"
+libclang = "15.*"
+llvm-openmp = "15.*"
+
+[feature.bindings.pypi-dependencies]
+clang = "==15.*"
+ctypeslib2 = "*"
+
+[feature.bindings.tasks]
+# Requires a prior `pixi run build` (libascot.so objects in src/).
+bindings = "make ascot2py.py"
+
+[environments]
+default = { features = ["nompi", "bindings"] }
+mpi     = { features = ["mpi", "bindings"] }
+aws     = { features = ["extmpi", "aws"] }
