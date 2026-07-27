@@ -73,16 +73,32 @@ scripts = ["tools/aws-activation.sh"]
 HDF5_USE_FILE_LOCKING = "FALSE"   # FSx (Lustre) has no flock(); required for .h5 writes
 
 [feature.aws.tasks.run-ascot]
-description = "Run ascot5_main on compute nodes (srun --mpi=pmix, 2 ranks x 96 threads per hpc7a node). Run from the directory containing the input file."
+description = "Run ascot5_main on compute nodes (srun --mpi=pmix, 192 threads per hpc7a node). Run from the directory containing the input file."
 args = [
   { arg = "infile", default = "ascot.h5" },
   { arg = "nodes", default = "2" },
   { arg = "time", default = "4:00:00" },
 ]
-env = { OMP_NUM_THREADS = "96", OMP_PLACES = "threads", OMP_PROC_BIND = "spread" }
-cmd = """
-bash -c 'set -o pipefail; cd "$INIT_CWD" && mkdir -p logs && srun --mpi=pmix --nodes={{ nodes }} --ntasks-per-node=2 --cpus-per-task=96 --partition=hpc7a-96xlarge --time={{ time }} --exclusive "$PIXI_PROJECT_ROOT/build/ascot5_main" --in="{{ infile }}" 2>&1 | tee "logs/run-ascot_$(date -u +%Y%m%dT%H%M%SZ).log"'
-"""
+env = { OMP_NUM_THREADS = "192", OMP_PLACES = "threads", OMP_PROC_BIND = "spread" }
+cmd = '''
+bash -c 'mkdir -p logs && sbatch <<EOF
+#!/bin/bash
+#SBATCH --job-name=ascot5
+#SBATCH --partition=hpc7a-96xlarge
+#SBATCH --nodes={{ nodes }}
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=192
+#SBATCH --time={{ time }}
+#SBATCH --exclusive
+#SBATCH --output=logs/run-ascot_%j.log
+#SBATCH --error=logs/run-ascot_%j.log
+
+set -o pipefail
+cd "${INIT_CWD:-\$SLURM_SUBMIT_DIR}"
+
+srun --mpi=pmix "$PIXI_PROJECT_ROOT/build/ascot5_main" --in="{{ infile }}"
+EOF'
+'''
 
 # --- clang2py binding regeneration (from environment-dev.yaml) ----------
 [feature.bindings.dependencies]

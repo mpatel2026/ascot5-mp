@@ -21,3 +21,6 @@ if [ -d /opt/amazon/openmpi5 ]; then
     export HDF5_CC=mpicc
     export HDF5_CLINKER=mpicc
 fi
+export CFLAGS="-Wno-error=implicit-function-declaration -L/opt/amazon/openmpi5/lib -lmpi -Wl,-rpath,/opt/amazon/openmpi5/lib -Wl,-rpath,/opt/amazon/efa/lib -Wl,--allow-shlib-undefined ${CFLAGS}"
+export LDFLAGS="-L/opt/amazon/openmpi5/lib -lmpi -Wl,-rpath,/opt/amazon/openmpi5/lib -Wl,-rpath,/opt/amazon/efa/lib -Wl,--allow-shlib-undefined ${LDFLAGS}"
+export CPATH="/opt/amazon/openmpi5/include:${CPATH}"
