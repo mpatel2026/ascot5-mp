@@ -8,8 +8,11 @@ from .imasinterface import ImportImas
 from .convertascot4 import Ascot4Templates
 from .nextstepfusioninterface import ImportNSF
 
+from .novatroninterface import ImportNovatron
+
 class Template(AnalyticalInputs, OptionTemplates, PoincareTemplates,
-                ImportData, ImportImas, Ascot4Templates, ImportNSF):
+                ImportData, ImportImas, Ascot4Templates, ImportNSF,
+                ImportNovatron):
     """Class for creating input data from templates or imported data.
 
     The templates are constructed by calling :meth:`construct` and specifying

@@ -58,7 +58,7 @@ void bbnbi_simulate(
 
     /* Initialize input data */
     simulate_init(sim);
-    random_init(&sim->random_data, time(NULL));
+    random_init(sim->random_data, time(NULL));
 
     /* Calculate total NBI power so that we can distribute markers along
      * the injectors according to their power */
@@ -143,11 +143,11 @@ void bbnbi_inject_markers(particle_state* p, int nprt, int ngenerated, real t0,
      * other physics) until they enter the plasma for the first time.     */
     #pragma omp parallel for
     for(int i = 0; i < nprt; i++) {
-        real time = t0 + random_uniform(&sim->random_data) * (t1-t0);
+        real time = t0 + random_uniform(sim->random_data) * (t1-t0);
 
         /* Assign initial phase-space coordinates for this marker */
         real xyz[3], vxyz[3], rpz[3], vhat[3];
-        nbi_inject(xyz, vxyz, inj, &sim->random_data);
+        nbi_inject(xyz, vxyz, inj, sim->random_data);
         math_xyz2rpz(xyz, rpz);
         math_unit(vxyz, vhat);
 
@@ -163,7 +163,7 @@ void bbnbi_inject_markers(particle_state* p, int nprt, int ngenerated, real t0,
             math_xyz2rpz(xyz, rpz);
             err = B_field_eval_psi(&psi, rpz[0], rpz[1], rpz[2], time,
                                    &sim->B_data);
-            if(xyz[0]*xyz[0] + xyz[1]*xyz[1] + xyz[2]*xyz[2] > 1e3) {
+            if(sqrt(xyz[0]*xyz[0] + xyz[1]*xyz[1] + xyz[2]*xyz[2]) > 1e3) {
                 break;
             }
         }
@@ -223,7 +223,7 @@ void bbnbi_trace_markers(particle_queue *pq, sim_data* sim) {
         p.id[i] = -1;
         p.running[i] = 0;
         hin[i] = 1e-10;
-        threshold[i] = random_uniform(&sim->random_data);
+        threshold[i] = random_uniform(sim->random_data);
         remaining[i] = 1.0;
         shinethrough[i] = 0;
     }
@@ -243,7 +243,6 @@ void bbnbi_trace_markers(particle_queue *pq, sim_data* sim) {
                 /* These are needed later */
                 real pnorm = math_normc(p.p_r[i], p.p_phi[i], p.p_z[i]);
                 real gamma = physlib_gamma_pnorm(p.mass[i], pnorm);
-                real ekin  = physlib_Ekin_pnorm(p.mass[i], pnorm);
 
                 /* Advance ballistic trajectory by converting momentum to
                  * cartesian coordinates */
@@ -297,6 +296,26 @@ void bbnbi_trace_markers(particle_queue *pq, sim_data* sim) {
                         pls_dens, pls_temp, rho[0], p.r[i], p.phi[i], p.z[i],
                         p.time[i], &sim->plasma_data);
                 }
+
+                /* Compute kinetic energy in plasma frame */
+                real vflow = 0;
+                if(!err) {
+                    err = plasma_eval_flow(
+                        &vflow, p.rho[i], p.r[i], p.phi[i], p.z[i], p.time[i],
+                        &sim->plasma_data);
+                }
+                real vplasma[3];
+                real bnorm = math_normc(p.B_r[i], p.B_phi[i], p.B_z[i]);
+                vplasma[0] = ( p.p_r[i] / ( gamma * p.mass[i] )
+                    - vflow * p.B_r[i] / bnorm );
+                vplasma[1] = ( p.p_phi[i] / ( gamma * p.mass[i] )
+                    - vflow * p.B_phi[i] / bnorm );
+                vplasma[2] = p.p_z[i] / ( gamma * p.mass[i] )
+                    - vflow * p.B_z[i] / bnorm;
+
+                real vnorm = math_norm(vplasma);
+                pnorm = physlib_pnorm_vnorm(p.mass[i], vnorm);
+                real ekin  = physlib_Ekin_pnorm(p.mass[i], pnorm);
 
                 /* Calculate ionization rate */
                 real rate = 0.0;
@@ -357,7 +376,7 @@ void bbnbi_trace_markers(particle_queue *pq, sim_data* sim) {
                 p.time[i] += p.mileage[i];
 
                 /* Reset these for the next marker */
-                threshold[i] = random_uniform(&sim->random_data);
+                threshold[i] = random_uniform(sim->random_data);
                 remaining[i] = 1.0;
                 shinethrough[i] = 0;
 
