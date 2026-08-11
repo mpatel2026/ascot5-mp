@@ -11,9 +11,10 @@ class ImportNSF():
         Parameters
         ----------
         x_limiter : array_like
-            x coordinates of the wall limiter [cm].
+
+            x coordinates of the wall limiter [m].
         y_limiter : array_like
-            y coordinates of the wall limiter [cm].
+            y coordinates of the wall limiter [m].
 
         Returns
         -------
@@ -25,8 +26,8 @@ class ImportNSF():
         """
         out = {
             "nelements": x_limiter.size,
-            "r": x_limiter / 100,
-            "z": y_limiter / 100,
+            "r": x_limiter,
+            "z": y_limiter,
             }
         return ("wall_2D", out)
 
@@ -143,7 +144,10 @@ class ImportNSF():
         """
         r = x_psi.ravel()
         bphi = np.tile(b0 * magnetic_center[0] / r, (y_psi.size,1)).T
+<<<<<<< HEAD
         scale = 1e5
+=======
+>>>>>>> upstream/develop
         out = {
             "rmin": x_psi[0],
             "rmax": x_psi[-1],
@@ -153,9 +157,15 @@ class ImportNSF():
             "nz": y_psi.size,
             "axisr": magnetic_center[0],
             "axisz": magnetic_center[1],
+<<<<<<< HEAD
             "psi": psi / scale,
             "psi0": psi_axis / scale,
             "psi1": psi_separatrix / scale,
+=======
+            "psi": psi,
+            "psi0": psi_axis,
+            "psi1": psi_separatrix,
+>>>>>>> upstream/develop
             "br": psi * 0,
             "bphi": bphi,
             "bz": psi * 0,

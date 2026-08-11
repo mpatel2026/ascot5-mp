@@ -351,7 +351,7 @@ a5err B_STS_eval_psi_dpsi(real psi_dpsi[4], real r, real phi, real z,
                           B_STS_data* Bdata) {
     a5err err = 0;
     int interperr = 0; /* If error happened during interpolation */
-    real psi_dpsi_temp[10];
+    real psi_dpsi_temp[4];
 
     real r_red, phi_red, z_red, flip;
     err += B_STS_reduce_symm(r, phi, z, &r_red, &phi_red, &z_red, &flip, Bdata);
@@ -486,7 +486,7 @@ a5err B_STS_eval_B_dB(real B_dB[12], real r, real phi, real z,
                       B_STS_data* Bdata) {
     a5err err = 0;
     int interperr = 0; /* If error happened during interpolation */
-    real B_dB_temp[10];
+    real B_dB_temp[4];
 
     real r_red, phi_red, z_red, flip;
     err += B_STS_reduce_symm(r, phi, z, &r_red, &phi_red, &z_red, &flip, Bdata);

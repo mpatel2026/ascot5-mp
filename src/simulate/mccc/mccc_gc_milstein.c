@@ -40,8 +40,9 @@ void mccc_gc_milstein(particle_simd_gc* p, real* hin, real* acc, real* collfreq,
     const real* qb = plasma_get_species_charge(pdata);
     const real* mb = plasma_get_species_mass(pdata);
 
-    #pragma omp simd
-    for(int i = 0; i < NSIMD; i++) {
+    GPU_DATA_IS_MAPPED(hin[0:p->n_mrk], hout[0:p->n_mrk], rnd[0:5*p->n_mrk], w[0:p->n_mrk], acc[0:p->n_mrk], collfreq[0:p->n_mrk])
+    GPU_PARALLEL_LOOP_ALL_LEVELS
+    for(int i = 0; i < p->n_mrk; i++) {
         if(p->running[i]) {
             a5err errflag = 0;
 
@@ -54,7 +55,7 @@ void mccc_gc_milstein(particle_simd_gc* p, real* hin, real* acc, real* collfreq,
             real z0   = p->z[i];
 
             /* Move guiding center to (x, y, z, vnorm, xi) coordinates */
-            real vin, pin, vflow, gamma, ppar_flow, xiin, Xin_xyz[3];
+            real vin, pin, vflow, xiin, Xin_xyz[3], vpar, vperp2;
             Xin_xyz[0] = p->r[i] * cos(p->phi[i]);
             Xin_xyz[1] = p->r[i] * sin(p->phi[i]);
             Xin_xyz[2] = p->z[i];
@@ -63,11 +64,13 @@ void mccc_gc_milstein(particle_simd_gc* p, real* hin, real* acc, real* collfreq,
                     &vflow, p->rho[i], p->r[i], p->phi[i], p->z[i], p->time[i],
                     pdata);
             }
-            gamma = physlib_gamma_ppar(p->mass[i], p->mu[i], p->ppar[i], Bnorm);
-            ppar_flow = p->ppar[i] - gamma * vflow * p->mass[i];
-            pin  = physlib_gc_p(p->mass[i], p->mu[i], ppar_flow, Bnorm);
-            xiin = physlib_gc_xi(p->mass[i], p->mu[i], ppar_flow, Bnorm);
+            pin  = physlib_gc_p(p->mass[i], p->mu[i], p->ppar[i], Bnorm);
+            xiin = physlib_gc_xi(p->mass[i], p->mu[i], p->ppar[i], Bnorm);
             vin = physlib_vnorm_pnorm(p->mass[i], pin);
+            vpar = xiin * vin;
+            vperp2 = (1 - xiin * xiin) * vin * vin;
+            vin = sqrt((vpar - vflow) * (vpar - vflow) + vperp2);
+            xiin =  (vpar - vflow) / vin;
 
             /* Evaluate plasma density and temperature */
             real nb[MAX_SPECIES], Tb[MAX_SPECIES];
@@ -87,6 +90,7 @@ void mccc_gc_milstein(particle_simd_gc* p, real* hin, real* acc, real* collfreq,
             real gyrofreq = phys_gyrofreq_pnorm(p->mass[i], p->charge[i], pin,
                                                 Bnorm);
             real K = 0, Dpara = 0, dDpara = 0, dQ = 0, nu = 0, DX = 0;
+	    GPU_SEQUENTIAL_LOOP
             for(int j = 0; j < n_species; j++) {
                 real vb = sqrt( 2 * Tb[j] / mb[j] );
                 real x  = vin / vb;
@@ -123,7 +127,7 @@ void mccc_gc_milstein(particle_simd_gc* p, real* hin, real* acc, real* collfreq,
             }
             real dW[5] = {0, 0, 0, 0, 0};
             if(!errflag) {
-                dW[0] = w[i].wiener[tindex*5 + 0] - w[i].wiener[0]; // For X_1
+  	        dW[0] = w[i].wiener[tindex*5 + 0] - w[i].wiener[0]; // For X_1
                 dW[1] = w[i].wiener[tindex*5 + 1] - w[i].wiener[1]; // For X_2
                 dW[2] = w[i].wiener[tindex*5 + 2] - w[i].wiener[2]; // For X_3
                 dW[3] = w[i].wiener[tindex*5 + 3] - w[i].wiener[3]; // For v
@@ -195,6 +199,11 @@ void mccc_gc_milstein(particle_simd_gc* p, real* hin, real* acc, real* collfreq,
                 Xout_xyz[1] = Xin_xyz[1];
                 Xout_xyz[2] = Xin_xyz[2];
             }
+
+            vpar = xiout * vout;
+            vperp2 = (1 - xiout * xiout) * vout * vout;
+            vout = sqrt((vpar + vflow) * (vpar + vflow) + vperp2);
+            xiout =  (vpar + vflow) / vout;
             real pout = physlib_pnorm_vnorm(p->mass[i], vout);
 
             /* Back to cylindrical coordinates */
@@ -240,20 +249,8 @@ void mccc_gc_milstein(particle_simd_gc* p, real* hin, real* acc, real* collfreq,
 
                 p->r[i]    = Xout_rpz[0];
                 p->z[i]    = Xout_rpz[2];
-
-                /*Since we use xiout (in "flow frame") here, we will get the mu
-                in the "flow frame". If we assume that the flow frame has the
-                same perpendicular velocity, mu remains unchanged under the
-                co-ordinate transformation and thus this mu is then the same as
-                the mu in the lab frame.*/
                 p->mu[i]   = physlib_gc_mu(p->mass[i], pout, xiout, Bnorm);
-                gamma      = physlib_gamma_pnorm(p->mass[i], pout);
-                /* difference in ppar between the lab frame and "flow frame"  */
-                real dppar  = gamma * p->mass[i] * vflow;
-
-                /* p->ppar is in the lab frame; xiout and pout are in the
-                "flow frame" */
-                p->ppar[i] = physlib_gc_ppar(pout, xiout) + dppar;
+                p->ppar[i] = physlib_gc_ppar(pout, xiout);
 
                 /* Evaluate phi and theta angles so that they are cumulative */
                 real axisrz[2];
