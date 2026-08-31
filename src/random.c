@@ -71,6 +71,7 @@ void random_gsl_normal_simd(random_data* rdata, int n, double* r) {
 #include <math.h>
 #include "ascot5.h"
 #include "consts.h"
+#include "offload.h"
 #include "random.h"
 
 void random_lcg_init(random_data* rdata, uint64_t seed) {
@@ -107,14 +108,23 @@ void random_lcg_uniform_simd(random_data* rdata, int n, double* r) {
 }
 
 void random_lcg_normal_simd(random_data* rdata, int n, double* r) {
-    double x1, x2, w; /* Helper variables */
     int isEven = (n+1) % 2; /* Indicates if even number of random numbers are
                                requested */
 
+    /* Note on GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT below: the loop has a stride
+     * of two and writes both r[i] and r[i+1], so the compiler rounds the extent
+     * of the implicit data clause for r up to ((n+1)/2)*2 elements. When n is
+     * odd that is one element more than the caller mapped, and the run aborts
+     * with "variable in data clause is partially present on the device: name=r".
+     * Stating present(r[0:n]) explicitly suppresses the implicit clause; the
+     * guarded write below never touches r[n]. The helper scalars are declared
+     * inside the loop body so that each device thread gets its own copies. */
+
 #if A5_CCOL_USE_GEOBM == 1
     /* The geometric form */
-    GPU_PARALLEL_LOOP_ALL_LEVELS
+    GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT(r[0:n])
     for(int i = 0; i < n; i=i+2) {
+        double x1, x2, w; /* Helper variables */
         random_data* ri = random_lcg_state_at(rdata, i);
         w = 2.0;
         while( w >= 1.0 ) {
@@ -131,9 +141,9 @@ void random_lcg_normal_simd(random_data* rdata, int n, double* r) {
     }
 #else
     /* The common form */
-    double s;
-    GPU_PARALLEL_LOOP_ALL_LEVELS
+    GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT(r[0:n])
     for(int i = 0; i < n; i=i+2) {
+        double x1, x2, w, s; /* Helper variables */
         random_data* ri = random_lcg_state_at(rdata, i);
         x1 = random_lcg_uniform(ri);
         x2 = random_lcg_uniform(ri);

@@ -20,6 +20,28 @@
 #endif
 
 /**
+ * @brief Applies parallel execution to loops, declaring that the listed array
+ *        sections are already resident on the device.
+ *
+ * Use this instead of GPU_PARALLEL_LOOP_ALL_LEVELS whenever the loop writes to
+ * a mapped array through a pointer and the range the compiler would infer for
+ * the implicit data clause may differ from the range that was mapped. Relying
+ * on the inferred range is fragile: e.g. a loop with a stride of two makes the
+ * compiler round the extent up to an even number of elements, which then
+ * conflicts with an odd-sized mapping and aborts the run with "variable in
+ * data clause is partially present on the device".
+ */
+#if defined(GPU) && defined(_OPENMP)
+#define GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT(...) \
+    str_pragma(omp target teams distribute parallel for simd)
+#elif defined(GPU) && defined(_OPENACC)
+#define GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT(...) \
+    str_pragma(acc parallel loop present(__VA_ARGS__))
+#else
+#define GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT(...) str_pragma(omp simd)
+#endif
+
+/**
  * @brief Applies parallel execution to loops with reduction
  */
 #if defined(GPU) && defined(_OPENMP)
@@ -111,7 +133,9 @@
 #if defined(GPU) && defined(_OPENMP)
 #define GPU_ATOMIC str_pragma(omp atomic)
 #elif defined(GPU) && defined(_OPENACC)
-#define GPU_ATOMIC str_pragma(omp atomic)
+/* "omp atomic" is silently ignored when the code is built with -acc
+ * -Mnoopenmp, which would leave the histogram updates racy. */
+#define GPU_ATOMIC str_pragma(acc atomic update)
 #else
 #define GPU_ATOMIC str_pragma(omp atomic)
 #endif

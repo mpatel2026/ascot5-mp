@@ -52,7 +52,7 @@ void dist_COM_free(dist_COM_data* data) {
  * @param data pointer to the data struct
  */
 void dist_COM_offload(dist_COM_data* data) {
-    GPU_MAP_TO_DEVICE( data->histogram[0:data->n_mu*data->n_Ekin*data->n_Ptor] )
+    GPU_MAP_TO_DEVICE( data->histogram[0:data->step_2*(size_t)data->n_mu] )
 }
 
 /**
@@ -62,7 +62,7 @@ void dist_COM_offload(dist_COM_data* data) {
  */
 void dist_COM_onload(dist_COM_data* data) {
     GPU_UPDATE_FROM_DEVICE(
-        data->histogram[0:data->n_mu*data->n_Ekin*data->n_Ptor]
+        data->histogram[0:data->step_2*(size_t)data->n_mu]
         )
 }
 

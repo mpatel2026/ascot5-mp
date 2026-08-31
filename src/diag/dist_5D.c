@@ -67,7 +67,7 @@ void dist_5D_free(dist_5D_data* data) {
  */
 void dist_5D_offload(dist_5D_data* data) {
     GPU_MAP_TO_DEVICE(
-        data->histogram[0:data->n_r*data->n_phi*data->n_z*data->n_ppara*data->n_pperp*data->n_time*data->n_q]
+        data->histogram[0:data->step_6*(size_t)data->n_r]
     )
 }
 
@@ -78,7 +78,7 @@ void dist_5D_offload(dist_5D_data* data) {
  */
 void dist_5D_onload(dist_5D_data* data) {
     GPU_UPDATE_FROM_DEVICE(
-        data->histogram[0:data->n_r*data->n_phi*data->n_z*data->n_ppara*data->n_pperp*data->n_time*data->n_q]
+        data->histogram[0:data->step_6*(size_t)data->n_r]
         )
 }
 

@@ -66,7 +66,7 @@ void dist_rho6D_free(dist_rho6D_data* data) {
  */
 void dist_rho6D_offload(dist_rho6D_data* data) {
     GPU_MAP_TO_DEVICE(
-        data->histogram[0:data->n_rho*data->n_theta*data->n_phi*data->n_pr*data->n_pphi*data->n_pz*data->n_time*data->n_q]
+        data->histogram[0:data->step_7*(size_t)data->n_rho]
     )
 }
 
@@ -77,7 +77,7 @@ void dist_rho6D_offload(dist_rho6D_data* data) {
  */
 void dist_rho6D_onload(dist_rho6D_data* data) {
     GPU_UPDATE_FROM_DEVICE(
-        data->histogram[0:data->n_rho*data->n_theta*data->n_phi*data->n_pr*data->n_pphi*data->n_pz*data->n_time*data->n_q]
+        data->histogram[0:data->step_7*(size_t)data->n_rho]
         )
 }
 
