@@ -161,11 +161,16 @@ void simulate(int n_particles, particle_state* p, sim_data* sim) {
     int data_size = 5;
     /* Allocate an array of RNG states (one per parallel element) */
     sim->random_data = malloc(data_size * n_queue_size * sizeof(random_data));
-    /* Initialize each RNG state with a different seed.
-     * Using i ensures independent sequences across threads.
+    /* Initialize each RNG state with a different seed. The seed depends on
+     * the MPI rank as well, so that no two processes use the same streams.
      */
     for(int i = 0; i < data_size * n_queue_size; ++i) {
+#if defined(A5_LEGACY_RNG) || !defined(RANDOM_LCG)
         random_init(&sim->random_data[i], i);
+#else
+        random_init(&sim->random_data[i],
+                    random_lcg_seed((uint64_t)sim->mpi_rank, (uint64_t)i));
+#endif
     }
     /* Transfer RNG states to the GPU device memory */
     GPU_MAP_TO_DEVICE(sim->random_data[0:data_size * n_queue_size])

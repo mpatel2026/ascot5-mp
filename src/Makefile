@@ -50,6 +50,7 @@ ifeq ($(GPU),1)
 #   MAXREGCOUNT=N  cap registers per thread
 #   GPU_VLEN=N     vector_length of the parallel loops (see offload.h)
 #   MINFO=1        print compiler offload and register usage info
+#   LEGACY=1       original spline/RNG code (bit-exact with older builds)
 		GPUARCH?=cc80
 		GPUOPTS:=$(GPUARCH)
 		ifdef MAXREGCOUNT
@@ -62,6 +63,9 @@ ifeq ($(GPU),1)
 		CFLAGS+=-gpu=$(GPUOPTS)
 		ifdef GPU_VLEN
 			DEFINES+=-DA5_GPU_VLEN=$(GPU_VLEN)
+		endif
+		ifeq ($(LEGACY),1)
+			DEFINES+=-DA5_LEGACY_SPLINE -DA5_LEGACY_RNG
 		endif
 	else ifeq ($(OMP), 1)
 		CFLAGS+= -fopenmp

@@ -75,6 +75,7 @@ static inline random_data* random_lcg_state_at(random_data* rdata, int i) {
 }
 
 void random_lcg_init(random_data* rdata, uint64_t seed);
+uint64_t random_lcg_seed(uint64_t stream, uint64_t index);
 uint64_t random_lcg_integer(random_data* rdata);
 DECLARE_TARGET
 double random_lcg_uniform(random_data* rdata);

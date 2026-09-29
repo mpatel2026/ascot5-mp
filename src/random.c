@@ -78,6 +78,26 @@ void random_lcg_init(random_data* rdata, uint64_t seed) {
     rdata->r = seed;
 }
 
+/**
+ * @brief Seed for one of many independent LCG states
+ *
+ * Hashes (stream, index) with the SplitMix64 finalizer, so that the states
+ * start at unrelated points of the LCG cycle. Consecutive seeds would give
+ * streams that differ by a fixed offset pattern, and equal seeds on every
+ * MPI process would give identical streams on every process.
+ *
+ * @param stream stream identifier, e.g. the MPI rank
+ * @param index index of the state within the stream
+ *
+ * @return seed for random_lcg_init()
+ */
+uint64_t random_lcg_seed(uint64_t stream, uint64_t index) {
+    uint64_t z = (stream << 40) + index + 0x9E3779B97F4A7C15ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
 uint64_t random_lcg_integer(random_data* rdata) {
     /* parameters from https://nuclear.llnl.gov/CNP/rng/rngman/node4.html */
     uint64_t a = 2862933555777941757;
@@ -103,7 +123,12 @@ void random_lcg_uniform_simd(random_data* rdata, int n, double* r) {
     #pragma omp simd
 #endif
     for(int i = 0; i < n; i++) {
+#ifdef A5_LEGACY_RNG
         r[i] = (double) random_lcg_integer(rdata) / UINT64_MAX;
+#else
+        /* Top 53 bits as a double in [0, 1); avoids a division */
+        r[i] = (double)(random_lcg_integer(rdata) >> 11) * 0x1.0p-53;
+#endif
     }
 }
 
@@ -127,7 +152,7 @@ void random_lcg_normal_simd(random_data* rdata, int n, double* r) {
         double x1, x2, w; /* Helper variables */
         random_data* ri = random_lcg_state_at(rdata, i);
         w = 2.0;
-        while( w >= 1.0 ) {
+        while( w >= 1.0 || w == 0.0 ) {
             x1 = 2*random_lcg_uniform(ri)-1;
             x2 = 2*random_lcg_uniform(ri)-1;
             w = x1*x1 + x2*x2;
