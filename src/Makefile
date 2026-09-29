@@ -46,6 +46,23 @@ ifeq ($(GPU),1)
 	ifeq ($(ACC), 1)
 		CFLAGS+=-c++libs -cuda
 		CFLAGS+=-acc -Mnoopenmp
+# GPU target (A100 = cc80) and optional tuning knobs:
+#   MAXREGCOUNT=N  cap registers per thread
+#   GPU_VLEN=N     vector_length of the parallel loops (see offload.h)
+#   MINFO=1        print compiler offload and register usage info
+		GPUARCH?=cc80
+		GPUOPTS:=$(GPUARCH)
+		ifdef MAXREGCOUNT
+			GPUOPTS:=$(GPUOPTS),maxregcount:$(MAXREGCOUNT)
+		endif
+		ifeq ($(MINFO),1)
+			GPUOPTS:=$(GPUOPTS),ptxinfo
+			CFLAGS+=-Minfo=accel,inline
+		endif
+		CFLAGS+=-gpu=$(GPUOPTS)
+		ifdef GPU_VLEN
+			DEFINES+=-DA5_GPU_VLEN=$(GPU_VLEN)
+		endif
 	else ifeq ($(OMP), 1)
 		CFLAGS+= -fopenmp
 		DEFINES+=-D_OPENMP
