@@ -9,8 +9,10 @@
 #endif
 #if defined(GPU) && defined(_OPENACC)
 #include <openacc.h>
+#include <cuda_runtime.h>
 #endif
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <unistd.h>
@@ -125,10 +127,17 @@ void mpi_interface_select_device(int mpi_rank) {
     }
     host[sizeof(host)-1] = '\0';
     const char* visible = getenv("CUDA_VISIBLE_DEVICES");
+    /* The PCI bus ID identifies the physical GPU, also when the launcher
+     * makes every process see its GPU as device 0 */
+    char bus[32] = "unknown";
+    if(n_dev > 0 && cudaDeviceGetPCIBusId(bus, sizeof(bus), device)
+       != cudaSuccess) {
+        snprintf(bus, sizeof(bus), "unknown");
+    }
     print_out(VERBOSE_NORMAL,
               "Rank %d on %s: node-local rank %d/%d, using GPU %d of %d "
-              "visible (CUDA_VISIBLE_DEVICES=%s)\n",
-              mpi_rank, host, local_rank, local_size, device, n_dev,
+              "visible (PCI %s, CUDA_VISIBLE_DEVICES=%s)\n",
+              mpi_rank, host, local_rank, local_size, device, n_dev, bus,
               visible ? visible : "unset");
     if(n_dev < 1) {
         print_err("Warning: rank %d sees no GPU.\n", mpi_rank);
