@@ -139,8 +139,12 @@ typedef double real;  /**< Double precision float   */
 /** @brief Choose whether to use tabulated values for collision coefficients */
 #define A5_CCOL_USE_TABULATED 0
 
-/** @brief Default depth of octree struct */
+/** @brief Default depth of octree struct. The wall bounding box is split into
+ *  2^(depth-1) cells per dimension; a deeper tree means fewer triangles are
+ *  tested per wall-collision check, at the cost of a larger index. */
+#ifndef WALL_OCTREE_DEPTH
 #define WALL_OCTREE_DEPTH 7
+#endif
 
 /** @brief Input filename where RFOF parameters are stored */
 #define RFOF_CODEPARAM_XML "rfof_codeparam.xml"
