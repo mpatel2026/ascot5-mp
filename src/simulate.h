@@ -156,4 +156,7 @@ void simulate_init(sim_data* sim);
 
 void simulate(int n_particles, particle_state* p, sim_data* sim);
 
+void simulate_gpu_progress(sim_data* sim, int n_running, int n_mrk,
+                           real t_start, real* t_last, int final);
+
 #endif

@@ -8,13 +8,39 @@
 #include "ascot5.h"
 
 /**
+ * @brief OpenACC launch options shared by all parallel loops.
+ *
+ * Kernels are queued asynchronously on A5_GPU_QUEUE so that consecutive
+ * launches overlap with host-side work; GPU_WAIT must be placed before the
+ * host reads any result (reductions, updates to host, exit data).
+ * A5_GPU_VLEN, if defined, sets the vector length (threads per block).
+ */
+#if defined(GPU) && defined(_OPENACC)
+#define A5_GPU_QUEUE 1
+#ifdef A5_GPU_VLEN
+#define GPU_LOOP_OPTS async(A5_GPU_QUEUE) vector_length(A5_GPU_VLEN)
+#else
+#define GPU_LOOP_OPTS async(A5_GPU_QUEUE)
+#endif
+#endif
+
+/**
+ * @brief Waits until all queued GPU work has completed
+ */
+#if defined(GPU) && defined(_OPENACC)
+#define GPU_WAIT str_pragma(acc wait(A5_GPU_QUEUE))
+#else
+#define GPU_WAIT
+#endif
+
+/**
  * @brief Applies parallel execution to loops
  */
 #if defined(GPU) && defined(_OPENMP)
 #define GPU_PARALLEL_LOOP_ALL_LEVELS \
     str_pragma(omp target teams distribute parallel for simd)
 #elif defined(GPU) && defined(_OPENACC)
-#define GPU_PARALLEL_LOOP_ALL_LEVELS str_pragma(acc parallel loop)
+#define GPU_PARALLEL_LOOP_ALL_LEVELS str_pragma(acc parallel loop GPU_LOOP_OPTS)
 #else
 #define GPU_PARALLEL_LOOP_ALL_LEVELS str_pragma(omp simd)
 #endif
@@ -36,7 +62,7 @@
     str_pragma(omp target teams distribute parallel for simd)
 #elif defined(GPU) && defined(_OPENACC)
 #define GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT(...) \
-    str_pragma(acc parallel loop present(__VA_ARGS__))
+    str_pragma(acc parallel loop GPU_LOOP_OPTS present(__VA_ARGS__))
 #else
 #define GPU_PARALLEL_LOOP_ALL_LEVELS_PRESENT(...) str_pragma(omp simd)
 #endif
@@ -49,6 +75,8 @@
     str_pragma(omp target teams distribute parallel for simd \
     reduction(+:__VA_ARGS__))
 #elif defined(GPU) && defined(_OPENACC)
+/* Synchronous: the result is read on the host right after the loop. Place
+ * GPU_WAIT before it so that all queued kernels have finished. */
 #define GPU_PARALLEL_LOOP_ALL_LEVELS_REDUCTION(...) \
     str_pragma(acc parallel loop reduction(+:__VA_ARGS__))
 #else

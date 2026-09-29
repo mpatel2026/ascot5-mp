@@ -110,6 +110,11 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
     particle_offload_gc(&p0);
     real* rnd = (real*) malloc(5*mrk_array_size*sizeof(real));
     GPU_MAP_TO_DEVICE(hin[0:mrk_array_size], rnd[0:5*mrk_array_size], hin_default[0:mrk_array_size], hnext_recom[0:mrk_array_size], hout_rfof[0:mrk_array_size])
+#ifdef GPU
+    int n_steps = 0;              /* Time steps taken */
+    real t_loop_start = A5_WTIME; /* For progress output */
+    real t_progress = t_loop_start;
+#endif
     while(n_running > 0) {
 
         /* Store marker states */
@@ -121,9 +126,9 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
         /*************************** Physics **********************************/
 
         /* Set time-step negative if tracing backwards in time */
-        GPU_PARALLEL_LOOP_ALL_LEVELS
-        for(int i = 0; i < p.n_mrk; i++) {
-            if(sim->reverse_time) {
+        if(sim->reverse_time) {
+            GPU_PARALLEL_LOOP_ALL_LEVELS
+            for(int i = 0; i < p.n_mrk; i++) {
                 hin[i]  = -hin[i];
             }
         }
@@ -142,9 +147,9 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
         }
 
         /* Switch sign of the time-step again if it was reverted earlier */
-        GPU_PARALLEL_LOOP_ALL_LEVELS
-        for(int i = 0; i < p.n_mrk; i++) {
-            if(sim->reverse_time) {
+        if(sim->reverse_time) {
+            GPU_PARALLEL_LOOP_ALL_LEVELS
+            for(int i = 0; i < p.n_mrk; i++) {
                 hin[i]  = -hin[i];
             }
         }
@@ -212,11 +217,20 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
 
         /* Update running particles */
 #ifdef GPU
-        n_running = 0;
-        GPU_PARALLEL_LOOP_ALL_LEVELS_REDUCTION(n_running)
-        for(int i = 0; i < p.n_mrk; i++)
-        {
-            if(p.running[i] > 0) n_running++;
+        /* Count running markers only every A5_GPU_NCHECK steps since the
+         * count makes the host wait for the GPU. Steps taken after the last
+         * marker has finished change nothing, as every kernel skips markers
+         * that are not running. */
+        if(++n_steps % A5_GPU_NCHECK == 0) {
+            GPU_WAIT
+            n_running = 0;
+            GPU_PARALLEL_LOOP_ALL_LEVELS_REDUCTION(n_running)
+            for(int i = 0; i < p.n_mrk; i++)
+            {
+                if(p.running[i] > 0) n_running++;
+            }
+            simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start,
+                                  &t_progress, 0);
         }
 #else
         n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
@@ -240,13 +254,25 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
 
     /* All markers simulated! */
 #ifdef GPU
+    GPU_WAIT
+    simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start, &t_progress,
+                          1);
     GPU_MAP_FROM_DEVICE(sim[0:1])
     particle_onload_gc(&p);
     n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
 #endif
+#ifdef GPU
+    GPU_MAP_DELETE_DEVICE(hin[0:mrk_array_size], rnd[0:5*mrk_array_size],
+                          hin_default[0:mrk_array_size],
+                          hnext_recom[0:mrk_array_size],
+                          hout_rfof[0:mrk_array_size])
+#endif
     free(cycle);
     free(hin);
     free(rnd);
+    free(hin_default);
+    free(hnext_recom);
+    free(hout_rfof);
 
     /* Deallocate rfof structs */
     if(sim->enable_icrh) {

@@ -7,13 +7,18 @@
 #ifdef MPI
 #include <mpi.h>
 #endif
+#if defined(GPU) && defined(_OPENACC)
+#include <openacc.h>
+#endif
 #include <stddef.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <unistd.h>
 #include "ascot5.h"
 #include "diag.h"
 #include "mpi_interface.h"
 #include "particle.h"
+#include "print.h"
 #include "simulate.h"
 
 /**
@@ -75,6 +80,111 @@ void mpi_interface_finalize(int err) {
 void mpi_interface_barrier() {
 #ifdef MPI
     MPI_Barrier(MPI_COMM_WORLD);
+#endif
+}
+
+/**
+ * @brief Assign a GPU to this MPI process
+ *
+ * When a process sees several GPUs, it picks one based on its rank within the
+ * node, so that processes sharing a node use different GPUs. When the job
+ * launcher already restricts each process to a single GPU (e.g. srun
+ * --gpu-bind=single:1 or --gpus-per-task=1), this only reports the binding.
+ * Each process prints its host and device so that the binding of multi-node
+ * runs can be checked from the output.
+ *
+ * Does nothing unless compiled for GPU with OpenACC.
+ *
+ * @param mpi_rank rank of this MPI process
+ */
+void mpi_interface_select_device(int mpi_rank) {
+#if defined(GPU) && defined(_OPENACC)
+    int local_rank = 0, local_size = 1;
+#ifdef MPI
+    int initialized;
+    MPI_Initialized(&initialized);
+    if(initialized) {
+        MPI_Comm node;
+        MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, mpi_rank,
+                            MPI_INFO_NULL, &node);
+        MPI_Comm_rank(node, &local_rank);
+        MPI_Comm_size(node, &local_size);
+        MPI_Comm_free(&node);
+    }
+#endif
+    int n_dev = acc_get_num_devices(acc_device_nvidia);
+    int device = 0;
+    if(n_dev > 1) {
+        device = local_rank % n_dev;
+        acc_set_device_num(device, acc_device_nvidia);
+    }
+
+    char host[256];
+    if(gethostname(host, sizeof(host))) {
+        host[0] = '\0';
+    }
+    host[sizeof(host)-1] = '\0';
+    const char* visible = getenv("CUDA_VISIBLE_DEVICES");
+    print_out(VERBOSE_NORMAL,
+              "Rank %d on %s: node-local rank %d/%d, using GPU %d of %d "
+              "visible (CUDA_VISIBLE_DEVICES=%s)\n",
+              mpi_rank, host, local_rank, local_size, device, n_dev,
+              visible ? visible : "unset");
+    if(n_dev < 1) {
+        print_err("Warning: rank %d sees no GPU.\n", mpi_rank);
+    }
+    else if(n_dev > 1 && local_size > n_dev) {
+        print_err("Warning: %d processes share %d GPUs on %s.\n",
+                  local_size, n_dev, host);
+    }
+    else if(n_dev == 1 && local_size > 1 && visible == NULL) {
+        print_err("Warning: %d processes on %s may all be using the same GPU; "
+                  "bind one GPU per task (e.g. srun --gpu-bind=single:1).\n",
+                  local_size, host);
+    }
+#else
+    (void)mpi_rank;
+#endif
+}
+
+/**
+ * @brief Report the spread of simulation times across MPI processes
+ *
+ * The root process prints the minimum, mean, and maximum time along with the
+ * slowest rank. The total run time is set by the slowest process, so a large
+ * spread means markers are unevenly distributed in cost.
+ *
+ * @param t_local simulation time of this process [s]
+ * @param mpi_rank rank of this MPI process
+ * @param mpi_size total number of MPI processes
+ * @param mpi_root rank of the root process
+ */
+void mpi_interface_report_time(real t_local, int mpi_rank, int mpi_size,
+                               int mpi_root) {
+#ifdef MPI
+    int initialized;
+    MPI_Initialized(&initialized);
+    if(!initialized || mpi_size < 2) {
+        return;
+    }
+    struct { double t; int rank; } in, tmin, tmax;
+    in.t = t_local;
+    in.rank = mpi_rank;
+    double tsum;
+    MPI_Reduce(&in, &tmin, 1, MPI_DOUBLE_INT, MPI_MINLOC, mpi_root,
+               MPI_COMM_WORLD);
+    MPI_Reduce(&in, &tmax, 1, MPI_DOUBLE_INT, MPI_MAXLOC, mpi_root,
+               MPI_COMM_WORLD);
+    MPI_Reduce(&in.t, &tsum, 1, MPI_DOUBLE, MPI_SUM, mpi_root,
+               MPI_COMM_WORLD);
+    if(mpi_rank == mpi_root) {
+        print_out(VERBOSE_NORMAL,
+                  "Simulation time per process: min %.1f s (rank %d), "
+                  "mean %.1f s, max %.1f s (rank %d)\n",
+                  tmin.t, tmin.rank, tsum / mpi_size, tmax.t, tmax.rank);
+    }
+#else
+    (void)t_local; (void)mpi_rank; (void)mpi_size; (void)mpi_root;
 #endif
 }
 

@@ -133,6 +133,34 @@ void plasma_1D_offload(plasma_1D_data* data) {
 }
 
 /**
+ * @brief Find the rho grid interval containing the given rho
+ *
+ * Returns i such that rho[i] <= rho < rho[i+1]. The caller must have checked
+ * that rho[0] <= rho < rho[n_rho-1]. A binary search gives the same index as
+ * a linear scan but in log2(n_rho) steps, which matters on the GPU where the
+ * profiles are evaluated several times per marker per time step.
+ *
+ * @param rho radial coordinate
+ * @param pls_data pointer to plasma data struct
+ *
+ * @return index of the lower grid point
+ */
+static inline int plasma_1D_rho_index(real rho, plasma_1D_data* pls_data) {
+    int lo = 0;
+    int hi = pls_data->n_rho - 1;
+    while(hi - lo > 1) {
+        int mid = (lo + hi) / 2;
+        if(pls_data->rho[mid] <= rho) {
+            lo = mid;
+        }
+        else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+/**
  * @brief Evaluate plasma temperature
  *
  * This function evaluates the temperature of a plasma species at the given
@@ -156,11 +184,7 @@ a5err plasma_1D_eval_temp(real* temp, real rho, int species,
         err = error_raise( ERR_INPUT_EVALUATION, __LINE__, EF_PLASMA_1D );
     }
     else {
-        int i_rho = 0;
-        while(i_rho < pls_data->n_rho - 1 && pls_data->rho[i_rho] <= rho) {
-            i_rho++;
-        }
-        i_rho--;
+        int i_rho = plasma_1D_rho_index(rho, pls_data);
         real t_rho = (rho - pls_data->rho[i_rho])
             / (pls_data->rho[i_rho+1] - pls_data->rho[i_rho]);
 
@@ -196,11 +220,7 @@ a5err plasma_1D_eval_dens(real* dens, real rho, int species,
         err = error_raise( ERR_INPUT_EVALUATION, __LINE__, EF_PLASMA_1D );
     }
     else {
-        int i_rho = 0;
-        while(i_rho < pls_data->n_rho - 1 && pls_data->rho[i_rho] <= rho) {
-            i_rho++;
-        }
-        i_rho--;
+        int i_rho = plasma_1D_rho_index(rho, pls_data);
         real t_rho = (rho - pls_data->rho[i_rho])
                  / (pls_data->rho[i_rho+1] - pls_data->rho[i_rho]);
 
@@ -235,11 +255,7 @@ a5err plasma_1D_eval_densandtemp(real* dens, real* temp, real rho,
         err = error_raise( ERR_INPUT_EVALUATION, __LINE__, EF_PLASMA_1D );
     }
     else {
-        int i_rho = 0;
-        while(i_rho < pls_data->n_rho-1 && pls_data->rho[i_rho] <= rho) {
-            i_rho++;
-        }
-        i_rho--;
+        int i_rho = plasma_1D_rho_index(rho, pls_data);
 
         real t_rho = (rho - pls_data->rho[i_rho])
                  / (pls_data->rho[i_rho+1] - pls_data->rho[i_rho]);
@@ -284,11 +300,7 @@ a5err plasma_1D_eval_flow(real* vflow, real rho, real r,
         err = error_raise( ERR_INPUT_EVALUATION, __LINE__, EF_PLASMA_1D );
     }
     else {
-        int i_rho = 0;
-        while(i_rho < pls_data->n_rho-1 && pls_data->rho[i_rho] <= rho) {
-            i_rho++;
-        }
-        i_rho--;
+        int i_rho = plasma_1D_rho_index(rho, pls_data);
         *vflow = pls_data->vtor[i_rho];
     }
     *vflow *= r;

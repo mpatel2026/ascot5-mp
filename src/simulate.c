@@ -352,6 +352,35 @@ void simulate_init(sim_data* sim) {
 }
 
 /**
+ * @brief Print how many markers are still running on this MPI process (GPU)
+ *
+ * On GPU there is no monitor thread, so the simulation loops call this after
+ * counting the running markers. Output is printed at most every
+ * A5_GPU_PROGRESSINTERVAL seconds, and always when final is nonzero. Each MPI
+ * process prints its own line so that load imbalance between GPUs is visible.
+ *
+ * @param sim pointer to simulation data
+ * @param n_running number of markers still running
+ * @param n_mrk number of markers simulated by this process
+ * @param t_start wall time when the simulation loop started
+ * @param t_last wall time of the previous print, updated here
+ * @param final nonzero when the simulation loop has finished
+ */
+void simulate_gpu_progress(sim_data* sim, int n_running, int n_mrk,
+                           real t_start, real* t_last, int final) {
+    real t_now = A5_WTIME;
+    if(!final && t_now - *t_last < A5_GPU_PROGRESSINTERVAL) {
+        return;
+    }
+    *t_last = t_now;
+    print_out(VERBOSE_NORMAL,
+              "Rank %d: %d/%d markers running, %.1f s elapsed%s\n",
+              sim->mpi_rank, n_running, n_mrk, t_now - t_start,
+              final ? " (finished)" : "");
+    fflush(stdout);
+}
+
+/**
  * @brief Monitor simulation progress
  *
  * This function contains a loop that is repeated until all markers have

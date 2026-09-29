@@ -34,7 +34,7 @@ void mccc_gc_euler(particle_simd_gc* p, real* h, B_field_data* Bdata,
     const real* qb = plasma_get_species_charge(pdata);
     const real* mb = plasma_get_species_mass(pdata);
 
-    GPU_DATA_IS_MAPPED(h[0:p->n_mrk], rnd[0:3*p->n_mrk])
+    GPU_DATA_IS_MAPPED(h[0:p->n_mrk], rnd[0:5*p->n_mrk])
     GPU_PARALLEL_LOOP_ALL_LEVELS
     for(int i = 0; i < p->n_mrk; i++) {
         if(p->running[i]) {

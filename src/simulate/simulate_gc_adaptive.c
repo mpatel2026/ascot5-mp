@@ -129,6 +129,11 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
     acceleration_offload(&acceleration,mrk_array_size);
     GPU_MAP_TO_DEVICE(hin[0:mrk_array_size],rnd[0:5*mrk_array_size],hout_orb[0:mrk_array_size],hout_col[0:mrk_array_size],hout_rfof[0:mrk_array_size],hnext[0:mrk_array_size],cycle[0:mrk_array_size])
     mccc_wiener_offload(wienarr,mrk_array_size);   
+#ifdef GPU
+    int n_steps = 0;              /* Time steps taken */
+    real t_loop_start = A5_WTIME; /* For progress output */
+    real t_progress = t_loop_start;
+#endif
     while(n_running > 0) {
 
         /* Store marker states in case time step will be rejected */
@@ -144,9 +149,9 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
         /*************************** Physics **********************************/
 
         /* Set time-step negative if tracing backwards in time */
-        GPU_PARALLEL_LOOP_ALL_LEVELS
-        for(int i = 0; i < p.n_mrk; i++) {
-            if(sim->reverse_time) {
+        if(sim->reverse_time) {
+            GPU_PARALLEL_LOOP_ALL_LEVELS
+            for(int i = 0; i < p.n_mrk; i++) {
                 hin[i]  = -hin[i];
             }
         }
@@ -297,11 +302,20 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
 
         /* Update number of running particles */
 #ifdef GPU
-        n_running = 0;
-        GPU_PARALLEL_LOOP_ALL_LEVELS_REDUCTION(n_running)
-        for(int i = 0; i < p.n_mrk; i++)
-        {
-            if(p.running[i] > 0) n_running++;
+        /* Count running markers only every A5_GPU_NCHECK steps since the
+         * count makes the host wait for the GPU. Steps taken after the last
+         * marker has finished change nothing, as every kernel skips markers
+         * that are not running. */
+        if(++n_steps % A5_GPU_NCHECK == 0) {
+            GPU_WAIT
+            n_running = 0;
+            GPU_PARALLEL_LOOP_ALL_LEVELS_REDUCTION(n_running)
+            for(int i = 0; i < p.n_mrk; i++)
+            {
+                if(p.running[i] > 0) n_running++;
+            }
+            simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start,
+                                  &t_progress, 0);
         }
 #else
         n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
@@ -329,10 +343,17 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
 
     /* All markers simulated! */
 #ifdef GPU
+    GPU_WAIT
+    simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start, &t_progress,
+                          1);
     GPU_MAP_FROM_DEVICE(sim[0:1])
     particle_onload_gc(&p);
     n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
-    mccc_wiener_onload(wienarr,mrk_array_size);   
+    mccc_wiener_onload(wienarr,mrk_array_size);
+    GPU_MAP_DELETE_DEVICE(hin[0:mrk_array_size], rnd[0:5*mrk_array_size],
+                          hout_orb[0:mrk_array_size], hout_col[0:mrk_array_size],
+                          hout_rfof[0:mrk_array_size], hnext[0:mrk_array_size],
+                          cycle[0:mrk_array_size], wienarr[0:mrk_array_size])
 #endif
     free(cycle);
     free(hin);
@@ -341,6 +362,7 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
     free(hout_col);
     free(hout_rfof);
     free(hnext);
+    free(wienarr);
     /* Deallocate rfof structs */
     if(sim->enable_icrh) {
         rfof_tear_down(&rfof_mrk);
@@ -412,10 +434,10 @@ real simulate_gc_adaptive_inidt(sim_data* sim, particle_simd_gc* p, int i) {
 void recalculate_acceleration(
     Acceleration* acc, sim_data* sim, particle_simd_gc* p, particle_simd_gc* p0)
 {
-    real rz[2];
     real SAFETY_FACTOR = (float)sim->enable_ada / 1000.0;
     GPU_PARALLEL_LOOP_ALL_LEVELS
     for(int i = 0; i < p->n_mrk; i++) {
+        real rz[2]; /* Declared here so that each thread has its own copy */
         B_field_get_axis_rz(rz, &sim->B_data, p->phi[i]);
         int omp_crossed = ((p->z[i] - rz[1]) * (p0->z[i] - rz[1]) < 0) &&
             p->r[i] > rz[0];

@@ -120,6 +120,15 @@ typedef double real;  /**< Double precision float   */
 /** @brief How often progress is being written (s) in the stdout file */
 #define A5_PRINTPROGRESSINTERVAL 20
 
+/** @brief On GPU, number of time steps between counting the running markers.
+ *  Counting makes the host wait for the GPU, so it is not done every step. */
+#ifndef A5_GPU_NCHECK
+#define A5_GPU_NCHECK 16
+#endif
+
+/** @brief On GPU, how often (s) each MPI rank prints its progress to stdout */
+#define A5_GPU_PROGRESSINTERVAL 600
+
 /** @brief Wall time */
 #define A5_WTIME omp_get_wtime()
 

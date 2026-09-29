@@ -55,13 +55,8 @@ void mccc_wiener_initialize(mccc_wienarr* w, real initime){
  * @param size of the data struct
  */
 void mccc_wiener_offload(mccc_wienarr* w, int mrk_array_size) {
-  GPU_MAP_TO_DEVICE(w[0:mrk_array_size])
-    for (int i = 0; i < mrk_array_size; i++) {
-      GPU_MAP_TO_DEVICE( w[i].nextslot[0:MCCC_NSLOTS] )
-      GPU_MAP_TO_DEVICE( w[i].time[0:MCCC_NSLOTS] )
-      GPU_MAP_TO_DEVICE( w[i].wiener[0:MCCC_NDIM*MCCC_NSLOTS] )
-     }
-    
+    /* The slot arrays are embedded in the struct, so this copies them too */
+    GPU_MAP_TO_DEVICE(w[0:mrk_array_size])
 }
 
 /**
@@ -71,11 +66,7 @@ void mccc_wiener_offload(mccc_wienarr* w, int mrk_array_size) {
  * @param size of the data struct
  */
 void mccc_wiener_onload(mccc_wienarr* w, int mrk_array_size) {
-    for (int i = 0; i < mrk_array_size; i++) {
-      GPU_UPDATE_FROM_DEVICE( w[i].nextslot )
-      GPU_UPDATE_FROM_DEVICE( w[i].time )
-      GPU_UPDATE_FROM_DEVICE( w[i].wiener )
-     }
+    GPU_UPDATE_FROM_DEVICE(w[0:mrk_array_size])
 }
 
  /**
