@@ -425,11 +425,13 @@ a5err interp3Dcomp_eval_f(real* f, interp3D_data* str, real x, real y, real z) {
 }
 
 /**
- * @brief Evaluate interpolated value of 3D field and 1st and 1st derivatives
+ * @brief Evaluate 3D field and 1st derivatives (original formulation)
  *
  * This function evaluates the interpolated value of a 3D scalar field and
  * its 1st derivatives using bicubic spline interpolation coefficients
- * of the compact form.
+ * of the compact form. It loads all 64 coefficients of the cell at once;
+ * interp3Dcomp_eval_df() uses a streamed form that needs fewer registers.
+ * Kept for bit-exact comparisons (-DA5_LEGACY_SPLINE) and tests.
  *
  * The evaluated  values are returned in an array with following elements:
  * - f_df[0] = f
@@ -445,8 +447,8 @@ a5err interp3Dcomp_eval_f(real* f, interp3D_data* str, real x, real y, real z) {
  *
  * @return zero on success and one if (x,y,z) point is outside the grid.
  */
-a5err interp3Dcomp_eval_df(real* f_df, interp3D_data* str,
-                         real x, real y, real z) {
+a5err interp3Dcomp_eval_df_legacy(real* f_df, interp3D_data* str,
+                                  real x, real y, real z) {
 
     /* Make sure periodic coordinates are within [min, max] region. */
     if(str->bc_x == PERIODICBC) {
@@ -847,6 +849,249 @@ a5err interp3Dcomp_eval_df(real* f_df, interp3D_data* str,
     }
 
     return err;
+}
+
+/**
+ * @brief Spline weights along one coordinate
+ *
+ * The compact tricubic spline is a sum over the 8 corners of the cell, and
+ * for each corner over 8 coefficients, of products of one weight per
+ * coordinate. Along each coordinate the weight is either linear (l) or cubic
+ * (c), at the lower (0) or upper (1) grid point. The d-prefixed weights are
+ * derivatives with respect to the coordinate.
+ */
+typedef struct {
+    real l0, l1, c0, c1, dl0, dl1, dc0, dc1;
+} interp3Dcomp_weights;
+
+/**
+ * @brief Compute spline weights for normalized cell coordinate d and grid g
+ */
+static inline void interp3Dcomp_set_weights(interp3Dcomp_weights* w,
+                                            real d, real g) {
+    real di = 1.0 - d;
+    w->l0  = di;
+    w->l1  = d;
+    w->c0  = (di*di*di - di) * g*g/6;
+    w->c1  = (d*d*d - d) * g*g/6;
+    w->dl0 = -1.0 / g;
+    w->dl1 =  1.0 / g;
+    w->dc0 = (-3*di*di + 1.0) * g/6;
+    w->dc1 = (3*d*d - 1.0) * g/6;
+}
+
+/**
+ * @brief Locate the cell containing (x, y, z) and compute the spline weights
+ *
+ * Same cell search and boundary handling as interp3Dcomp_eval_df_legacy().
+ *
+ * @return zero on success and one if (x,y,z) point is outside the grid.
+ */
+static inline int interp3Dcomp_locate(
+    interp3D_data* str, real x, real y, real z, int* n, int* x1, int* y1,
+    int* z1, interp3Dcomp_weights* wx, interp3Dcomp_weights* wy,
+    interp3Dcomp_weights* wz) {
+
+    /* Make sure periodic coordinates are within [min, max] region. */
+    if(str->bc_x == PERIODICBC) {
+        x = fmod(x - str->x_min, str->x_max - str->x_min) + str->x_min;
+        x = x + (x < str->x_min) * (str->x_max - str->x_min);
+    }
+    if(str->bc_y == PERIODICBC) {
+        y = fmod(y - str->y_min, str->y_max - str->y_min) + str->y_min;
+        y = y + (y < str->y_min) * (str->y_max - str->y_min);
+    }
+    if(str->bc_z == PERIODICBC) {
+        z = fmod(z - str->z_min, str->z_max - str->z_min) + str->z_min;
+        z = z + (z < str->z_min) * (str->z_max - str->z_min);
+    }
+
+    /* Cell indices and normalized coordinates within the cell. The -1 is
+     * needed at exactly grid end. */
+    int i_x = (x - str->x_min) / str->x_grid - 1*(x==str->x_max);
+    int i_y = (y - str->y_min) / str->y_grid - 1*(y==str->y_max);
+    int i_z = (z - str->z_min) / str->z_grid - 1*(z==str->z_max);
+    real dx = ( x - (str->x_min + i_x*str->x_grid) ) / str->x_grid;
+    real dy = ( y - (str->y_min + i_y*str->y_grid) ) / str->y_grid;
+    real dz = ( z - (str->z_min + i_z*str->z_grid) ) / str->z_grid;
+    interp3Dcomp_set_weights(wx, dx, str->x_grid);
+    interp3Dcomp_set_weights(wy, dy, str->y_grid);
+    interp3Dcomp_set_weights(wz, dz, str->z_grid);
+
+    /* Index jump to cell and to the neighbouring grid points */
+    *n  = i_z*str->n_y*str->n_x*8 + i_y*str->n_x*8 + i_x*8;
+    *x1 = 8;
+    *y1 = str->n_x*8;
+    *z1 = str->n_y*str->n_x*8;
+
+    /* Enforce periodic BC or check that the coordinate is within the domain */
+    int err = 0;
+    if( str->bc_x == PERIODICBC && i_x == str->n_x-1 ) {
+        *x1 = -(str->n_x-1)*(*x1);
+    }
+    else if( str->bc_x == NATURALBC && !(x >= str->x_min && x <= str->x_max) ) {
+        err = 1;
+    }
+    if( str->bc_y == PERIODICBC && i_y == str->n_y-1 ) {
+        *y1 = -(str->n_y-1)*(*y1);
+    }
+    else if( str->bc_y == NATURALBC && !(y >= str->y_min && y <= str->y_max) ) {
+        err = 1;
+    }
+    if( str->bc_z == PERIODICBC && i_z == str->n_z-1 ) {
+        *z1 = -(str->n_z-1)*(*z1);
+    }
+    else if( str->bc_z == NATURALBC && !(z >= str->z_min && z <= str->z_max) ) {
+        err = 1;
+    }
+    return err;
+}
+
+/**
+ * @brief Add the contribution of one cell corner to f and its gradient
+ *
+ * c points to the 8 coefficients of the corner. Coefficients 0, 2, 3, 6 are
+ * linear in x and 1, 4, 5, 7 cubic in x; the y-z weight products for each
+ * group are given for f (w), df/dy (wy), and df/dz (wz), in the order
+ * (ly*lz, cy*lz, ly*cz, cy*cz).
+ */
+static inline void interp3Dcomp_add_corner(
+    real f_df[4], const real* c, real lx, real cx, real dlx, real dcx,
+    const real w[4], const real wy[4], const real wz[4]) {
+    real a  = c[0]*w[0]  + c[2]*w[1]  + c[3]*w[2]  + c[6]*w[3];
+    real b  = c[1]*w[0]  + c[4]*w[1]  + c[5]*w[2]  + c[7]*w[3];
+    real ay = c[0]*wy[0] + c[2]*wy[1] + c[3]*wy[2] + c[6]*wy[3];
+    real by = c[1]*wy[0] + c[4]*wy[1] + c[5]*wy[2] + c[7]*wy[3];
+    real az = c[0]*wz[0] + c[2]*wz[1] + c[3]*wz[2] + c[6]*wz[3];
+    real bz = c[1]*wz[0] + c[4]*wz[1] + c[5]*wz[2] + c[7]*wz[3];
+    f_df[0] += lx*a  + cx*b;
+    f_df[1] += dlx*a + dcx*b;
+    f_df[2] += lx*ay + cx*by;
+    f_df[3] += lx*az + cx*bz;
+}
+
+/**
+ * @brief Add the contribution of one y-z edge (two x corners)
+ */
+static inline void interp3Dcomp_add_edge(
+    real f_df[4], const real* c, int x1, const interp3Dcomp_weights* wx,
+    real ly, real cy, real dly, real dcy, real lz, real cz, real dlz, real dcz) {
+    real w[4]  = {ly*lz,  cy*lz,  ly*cz,  cy*cz};
+    real wy[4] = {dly*lz, dcy*lz, dly*cz, dcy*cz};
+    real wz[4] = {ly*dlz, cy*dlz, ly*dcz, cy*dcz};
+    interp3Dcomp_add_corner(f_df, c, wx->l0, wx->c0, wx->dl0, wx->dc0,
+                            w, wy, wz);
+    interp3Dcomp_add_corner(f_df, c + x1, wx->l1, wx->c1, wx->dl1, wx->dc1,
+                            w, wy, wz);
+}
+
+/**
+ * @brief Evaluate f and its 1st derivatives from located cell and weights
+ *
+ * Streams through the 8 cell corners so that only one corner's coefficients
+ * are needed at a time, which keeps register use low on GPUs. Mathematically
+ * identical to interp3Dcomp_eval_df_legacy() up to rounding.
+ */
+static inline void interp3Dcomp_sum_df(
+    real f_df[4], const real* c, int x1, int y1, int z1,
+    const interp3Dcomp_weights* wx, const interp3Dcomp_weights* wy,
+    const interp3Dcomp_weights* wz) {
+    f_df[0] = 0; f_df[1] = 0; f_df[2] = 0; f_df[3] = 0;
+    interp3Dcomp_add_edge(f_df, c, x1, wx,
+                          wy->l0, wy->c0, wy->dl0, wy->dc0,
+                          wz->l0, wz->c0, wz->dl0, wz->dc0);
+    interp3Dcomp_add_edge(f_df, c + y1, x1, wx,
+                          wy->l1, wy->c1, wy->dl1, wy->dc1,
+                          wz->l0, wz->c0, wz->dl0, wz->dc0);
+    interp3Dcomp_add_edge(f_df, c + z1, x1, wx,
+                          wy->l0, wy->c0, wy->dl0, wy->dc0,
+                          wz->l1, wz->c1, wz->dl1, wz->dc1);
+    interp3Dcomp_add_edge(f_df, c + z1 + y1, x1, wx,
+                          wy->l1, wy->c1, wy->dl1, wy->dc1,
+                          wz->l1, wz->c1, wz->dl1, wz->dc1);
+}
+
+/**
+ * @brief Evaluate interpolated value of 3D field and 1st derivatives
+ *
+ * This function evaluates the interpolated value of a 3D scalar field and
+ * its 1st derivatives using tricubic spline interpolation coefficients
+ * of the compact form.
+ *
+ * The evaluated  values are returned in an array with following elements:
+ * - f_df[0] = f
+ * - f_df[1] = f_x
+ * - f_df[2] = f_y
+ * - f_df[3] = f_z
+ *
+ * Compiling with -DA5_LEGACY_SPLINE selects the original formulation, which
+ * gives bit-identical results to earlier versions.
+ *
+ * @param f_df array in which to place the evaluated values
+ * @param str data struct for data interpolation
+ * @param x x-coordinate
+ * @param y y-coordinate
+ * @param z z-coordinate
+ *
+ * @return zero on success and one if (x,y,z) point is outside the grid.
+ */
+a5err interp3Dcomp_eval_df(real* f_df, interp3D_data* str,
+                         real x, real y, real z) {
+#ifdef A5_LEGACY_SPLINE
+    return interp3Dcomp_eval_df_legacy(f_df, str, x, y, z);
+#else
+    int n, x1, y1, z1;
+    interp3Dcomp_weights wx, wy, wz;
+    int err = interp3Dcomp_locate(str, x, y, z, &n, &x1, &y1, &z1,
+                                  &wx, &wy, &wz);
+    if(!err) {
+        interp3Dcomp_sum_df(f_df, str->c + n, x1, y1, z1, &wx, &wy, &wz);
+    }
+    return err;
+#endif
+}
+
+/**
+ * @brief Evaluate three 3D fields on the same grid and their 1st derivatives
+ *
+ * Used for the three components of a vector field, e.g. the magnetic field.
+ * The cell and weights are computed once from str0; str1 and str2 must have
+ * the same grid and boundary conditions as str0.
+ *
+ * The evaluated values are f_df[4*k + j] for field k, with j as in
+ * interp3Dcomp_eval_df().
+ *
+ * @param f_df array of 12 elements in which to place the evaluated values
+ * @param str0 data struct for the first field
+ * @param str1 data struct for the second field
+ * @param str2 data struct for the third field
+ * @param x x-coordinate
+ * @param y y-coordinate
+ * @param z z-coordinate
+ *
+ * @return zero on success and one if (x,y,z) point is outside the grid.
+ */
+a5err interp3Dcomp_eval_df3(real* f_df, interp3D_data* str0,
+                            interp3D_data* str1, interp3D_data* str2,
+                            real x, real y, real z) {
+#ifdef A5_LEGACY_SPLINE
+    int err = 0;
+    err += interp3Dcomp_eval_df_legacy(&f_df[0], str0, x, y, z);
+    err += interp3Dcomp_eval_df_legacy(&f_df[4], str1, x, y, z);
+    err += interp3Dcomp_eval_df_legacy(&f_df[8], str2, x, y, z);
+    return err;
+#else
+    int n, x1, y1, z1;
+    interp3Dcomp_weights wx, wy, wz;
+    int err = interp3Dcomp_locate(str0, x, y, z, &n, &x1, &y1, &z1,
+                                  &wx, &wy, &wz);
+    if(!err) {
+        interp3Dcomp_sum_df(&f_df[0], str0->c + n, x1, y1, z1, &wx, &wy, &wz);
+        interp3Dcomp_sum_df(&f_df[4], str1->c + n, x1, y1, z1, &wx, &wy, &wz);
+        interp3Dcomp_sum_df(&f_df[8], str2->c + n, x1, y1, z1, &wx, &wy, &wz);
+    }
+    return err;
+#endif
 }
 
 /**

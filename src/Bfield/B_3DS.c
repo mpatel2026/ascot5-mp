@@ -365,25 +365,9 @@ a5err B_3DS_eval_B_dB(real B_dB[12], real r, real phi, real z,
                       B_3DS_data* Bdata) {
     a5err err = 0;
     int interperr = 0; /* If error happened during interpolation */
-    real B_dB_temp[4];
-
-    interperr += interp3Dcomp_eval_df(B_dB_temp, &Bdata->B_r, r, phi, z);
-    B_dB[0] = B_dB_temp[0];
-    B_dB[1] = B_dB_temp[1];
-    B_dB[2] = B_dB_temp[2];
-    B_dB[3] = B_dB_temp[3];
-
-    interperr += interp3Dcomp_eval_df(B_dB_temp, &Bdata->B_phi, r, phi, z);
-    B_dB[4] = B_dB_temp[0];
-    B_dB[5] = B_dB_temp[1];
-    B_dB[6] = B_dB_temp[2];
-    B_dB[7] = B_dB_temp[3];
-
-    interperr += interp3Dcomp_eval_df(B_dB_temp, &Bdata->B_z, r, phi, z);
-    B_dB[8] = B_dB_temp[0];
-    B_dB[9] = B_dB_temp[1];
-    B_dB[10] = B_dB_temp[2];
-    B_dB[11] = B_dB_temp[3];
+    /* All components share one grid, so they are evaluated together */
+    interperr += interp3Dcomp_eval_df3(B_dB, &Bdata->B_r, &Bdata->B_phi,
+                                       &Bdata->B_z, r, phi, z);
 
     /* Test for B field interpolation error */
     if(interperr) {
