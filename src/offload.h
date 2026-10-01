@@ -130,6 +130,30 @@
 #endif
 
 /**
+ * @brief Updates device variables from the host
+ */
+#if defined(GPU) && defined(_OPENMP)
+#define GPU_UPDATE_TO_DEVICE(...) \
+    str_pragma(omp target update to (__VA_ARGS__))
+#elif defined(GPU) && defined(_OPENACC)
+#define GPU_UPDATE_TO_DEVICE(...) str_pragma(acc update device (__VA_ARGS__))
+#else
+#define GPU_UPDATE_TO_DEVICE(...)
+#endif
+
+/**
+ * @brief Allocates device memory for variables without copying them
+ */
+#if defined(GPU) && defined(_OPENMP)
+#define GPU_MAP_CREATE(...) \
+    str_pragma(omp target enter data map (alloc: __VA_ARGS__))
+#elif defined(GPU) && defined(_OPENACC)
+#define GPU_MAP_CREATE(...) str_pragma(acc enter data create (__VA_ARGS__))
+#else
+#define GPU_MAP_CREATE(...)
+#endif
+
+/**
  * @brief Maps variables from the target device back to the host
  */
 #if defined(GPU) && defined(_OPENMP)

@@ -22,6 +22,7 @@
 #include "simulate_gc_fixed.h"
 #include "step/step_gc_rk4.h"
 #include "mccc/mccc.h"
+#include "simulate_compact.h"
 
 DECLARE_TARGET_SIMD_UNIFORM(sim)
 real simulate_gc_fixed_inidt(sim_data* sim, particle_simd_gc* p, int i);
@@ -114,6 +115,15 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
     int n_steps = 0;              /* Time steps taken */
     real t_loop_start = A5_WTIME; /* For progress output */
     real t_progress = t_loop_start;
+#if A5_GPU_COMPACT
+    /* Random numbers are generated for all slots and picked by each marker's
+     * original slot once the arrays have been compacted */
+    simulate_compact_data cdata;
+    simulate_compact_init(&cdata, mrk_array_size);
+    real* rnd_full = (real*) malloc(5*mrk_array_size*sizeof(real));
+    GPU_MAP_CREATE(rnd_full[0:5*mrk_array_size])
+    int compacted = 0;
+#endif
 #endif
     while(n_running > 0) {
 
@@ -156,6 +166,14 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
 
         /* Euler-Maruyama method for collisions */
         if(sim->enable_clmbcol) {
+#if defined(GPU) && A5_GPU_COMPACT
+            if(compacted) {
+                random_normal_simd(sim->random_data, 5*mrk_array_size,
+                                   rnd_full);
+                simulate_compact_rnd_blocked(&cdata, rnd, rnd_full, p.n_mrk, 5);
+            }
+            else
+#endif
             random_normal_simd(sim->random_data, 5*p.n_mrk, rnd);
             mccc_gc_euler(&p, hin, &sim->B_data, &sim->plasma_data,
                           &sim->mccc_data, rnd);
@@ -229,8 +247,25 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
             {
                 if(p.running[i] > 0) n_running++;
             }
-            simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start,
-                                  &t_progress, 0);
+            simulate_gpu_progress(sim, n_running, mrk_array_size,
+                                  t_loop_start, &t_progress, 0);
+#if A5_GPU_COMPACT
+            /* Move running markers to the front and shrink the arrays */
+            if(n_running > 0 && n_running < A5_GPU_COMPACT_FRAC * p.n_mrk
+               && p.n_mrk > A5_GPU_COMPACT_MIN) {
+                int n_active = p.n_mrk;
+                int n_new = simulate_compact_plan(&cdata, p.running, n_active);
+                simulate_compact_gc(&cdata, &p, n_active);
+                simulate_compact_real(&cdata, hin, n_active);
+                simulate_compact_real(&cdata, hin_default, n_active);
+                simulate_compact_real(&cdata, hnext_recom, n_active);
+                simulate_compact_real(&cdata, hout_rfof, n_active);
+                p.n_mrk  = n_new;
+                p0.n_mrk = n_new;
+                GPU_UPDATE_TO_DEVICE(p.n_mrk, p0.n_mrk)
+                compacted = 1;
+            }
+#endif
         }
 #else
         n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
@@ -255,8 +290,14 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
     /* All markers simulated! */
 #ifdef GPU
     GPU_WAIT
-    simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start, &t_progress,
-                          1);
+    simulate_gpu_progress(sim, n_running, mrk_array_size, t_loop_start,
+                          &t_progress, 1);
+#if A5_GPU_COMPACT
+    /* Finished markers are all still in the arrays; restore the full size */
+    p.n_mrk  = mrk_array_size;
+    p0.n_mrk = mrk_array_size;
+    GPU_UPDATE_TO_DEVICE(p.n_mrk, p0.n_mrk)
+#endif
     GPU_MAP_FROM_DEVICE(sim[0:1])
     particle_onload_gc(&p);
     n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
@@ -266,6 +307,11 @@ void simulate_gc_fixed(particle_queue* pq, sim_data* sim, int mrk_array_size) {
                           hin_default[0:mrk_array_size],
                           hnext_recom[0:mrk_array_size],
                           hout_rfof[0:mrk_array_size])
+#if A5_GPU_COMPACT
+    GPU_MAP_DELETE_DEVICE(rnd_full[0:5*mrk_array_size])
+    free(rnd_full);
+    simulate_compact_free(&cdata);
+#endif
 #endif
     free(cycle);
     free(hin);
