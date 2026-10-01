@@ -33,3 +33,4 @@ no_sync/
 c_cpp_properties.json
 .vscode/
 /variants
+/old_builds
