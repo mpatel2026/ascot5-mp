@@ -25,18 +25,10 @@
 #include "simulate_gc_adaptive.h"
 #include "step/step_gc_cashkarp.h"
 #include "mccc/mccc.h"
-#include "simulate_compact.h"
 #include "mccc/mccc_wiener.h"
 
 DECLARE_TARGET_SIMD_UNIFORM(sim)
 real simulate_gc_adaptive_inidt(sim_data* sim, particle_simd_gc* p, int i);
-
-#if defined(GPU) && A5_GPU_COMPACT
-/* Permutations for the per-marker structs of this driver, see
- * simulate_compact.h */
-SIMULATE_COMPACT_DEFINE_PERMUTE(permute_wiener, mccc_wienarr)
-SIMULATE_COMPACT_DEFINE_PERMUTE(permute_crossing, Crossing)
-#endif
 
 #define DUMMY_TIMESTEP_VAL 1.0 /**< Dummy time step value */
 
@@ -141,19 +133,6 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
     int n_steps = 0;              /* Time steps taken */
     real t_loop_start = A5_WTIME; /* For progress output */
     real t_progress = t_loop_start;
-#if A5_GPU_COMPACT
-    /* Random numbers are generated for all slots and picked by each marker's
-     * original slot once the arrays have been compacted */
-    simulate_compact_data cdata;
-    simulate_compact_init(&cdata, mrk_array_size);
-    real* rnd_full = (real*) malloc(5*mrk_array_size*sizeof(real));
-    GPU_MAP_CREATE(rnd_full[0:5*mrk_array_size])
-    int compacted = 0;
-    mccc_wienarr* tmp_w = (mccc_wienarr*) malloc(
-        mrk_array_size*sizeof(mccc_wienarr));
-    Crossing* tmp_cross = (Crossing*) malloc(mrk_array_size*sizeof(Crossing));
-    GPU_MAP_CREATE(tmp_w[0:mrk_array_size], tmp_cross[0:mrk_array_size])
-#endif
 #endif
     while(n_running > 0) {
 
@@ -207,14 +186,6 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
 
         /* Milstein method for collisions */
         if(sim->enable_clmbcol) {
-#if defined(GPU) && A5_GPU_COMPACT
-            if(compacted) {
-                random_normal_simd(sim->random_data, 5*mrk_array_size,
-                                   rnd_full);
-                simulate_compact_rnd_interleaved(&cdata, rnd, rnd_full, p.n_mrk, 5);
-            }
-            else
-#endif
             random_normal_simd(sim->random_data, 5*p.n_mrk, rnd);
             mccc_gc_milstein(&p, hin, acceleration.acc, acceleration.collfreq,
 			     hout_col, tol_col, wienarr, &sim->B_data,
@@ -343,30 +314,8 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
             {
                 if(p.running[i] > 0) n_running++;
             }
-            simulate_gpu_progress(sim, n_running, mrk_array_size,
-                                  t_loop_start, &t_progress, 0);
-#if A5_GPU_COMPACT
-            /* Move running markers to the front and shrink the arrays */
-            if(n_running > 0 && n_running < A5_GPU_COMPACT_FRAC * p.n_mrk
-               && p.n_mrk > A5_GPU_COMPACT_MIN) {
-                int n_active = p.n_mrk;
-                int n_new = simulate_compact_plan(&cdata, p.running, n_active);
-                simulate_compact_gc(&cdata, &p, n_active);
-                simulate_compact_real(&cdata, hin, n_active);
-                simulate_compact_real(&cdata, acceleration.acc, n_active);
-                simulate_compact_real(&cdata, acceleration.orbittime,
-                                      n_active);
-                simulate_compact_real(&cdata, acceleration.collfreq,
-                                      n_active);
-                permute_crossing(acceleration.cross, tmp_cross, cdata.perm,
-                                 n_active);
-                permute_wiener(wienarr, tmp_w, cdata.perm, n_active);
-                p.n_mrk  = n_new;
-                p0.n_mrk = n_new;
-                GPU_UPDATE_TO_DEVICE(p.n_mrk, p0.n_mrk)
-                compacted = 1;
-            }
-#endif
+            simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start,
+                                  &t_progress, 0);
         }
 #else
         n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
@@ -395,14 +344,8 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
     /* All markers simulated! */
 #ifdef GPU
     GPU_WAIT
-    simulate_gpu_progress(sim, n_running, mrk_array_size, t_loop_start,
-                          &t_progress, 1);
-#if A5_GPU_COMPACT
-    /* Finished markers are all still in the arrays; restore the full size */
-    p.n_mrk  = mrk_array_size;
-    p0.n_mrk = mrk_array_size;
-    GPU_UPDATE_TO_DEVICE(p.n_mrk, p0.n_mrk)
-#endif
+    simulate_gpu_progress(sim, n_running, p.n_mrk, t_loop_start, &t_progress,
+                          1);
     GPU_MAP_FROM_DEVICE(sim[0:1])
     particle_onload_gc(&p);
     n_running = particle_cycle_gc(pq, &p, &sim->B_data, cycle);
@@ -411,14 +354,6 @@ void simulate_gc_adaptive(particle_queue* pq, sim_data* sim, int mrk_array_size)
                           hout_orb[0:mrk_array_size], hout_col[0:mrk_array_size],
                           hout_rfof[0:mrk_array_size], hnext[0:mrk_array_size],
                           cycle[0:mrk_array_size], wienarr[0:mrk_array_size])
-#if A5_GPU_COMPACT
-    GPU_MAP_DELETE_DEVICE(rnd_full[0:5*mrk_array_size])
-    free(rnd_full);
-    simulate_compact_free(&cdata);
-    GPU_MAP_DELETE_DEVICE(tmp_w[0:mrk_array_size], tmp_cross[0:mrk_array_size])
-    free(tmp_w);
-    free(tmp_cross);
-#endif
 #endif
     free(cycle);
     free(hin);
